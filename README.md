@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="#install-scoop">Install</a> ·
+  <a href="#install">Install</a> ·
   <a href="#use-it">Use it</a> ·
   <a href="#releasing">Releasing</a> ·
   <a href="#development">Development</a>
@@ -29,16 +29,33 @@
 
 Go backend, [Wails v2](https://wails.io) shell (WebView2), plain HTML/CSS/JS frontend — no Node toolchain, no CGO. Works with [OpenRouter](https://openrouter.ai) image models.
 
-## Install (Scoop)
+## Install
 
-This repo is also a Scoop bucket.
+Pick whichever you like; Pennyframe tells you how to update the way you installed it.
+
+**Windows: installer.** Download `pennyframe-<version>-windows-setup.exe` from the [latest release](https://github.com/Kollefranz/pennyframe/releases/latest) and run it. It installs for your user only (no admin prompt), adds Start Menu and desktop shortcuts, and a newer installer upgrades in place. Windows may show a SmartScreen warning because the installer isn't code-signed: choose *More info → Run anyway*.
+
+**Windows: Scoop.** This repo is also a Scoop bucket.
 
 ```powershell
 scoop bucket add pennyframe https://github.com/Kollefranz/pennyframe
 scoop install pennyframe/pennyframe
 ```
 
-That puts Pennyframe in the Start Menu and on the desktop. Update with `scoop update pennyframe`; remove with `scoop uninstall pennyframe` (your images and settings are kept). Requires the Microsoft Edge WebView2 runtime, which is built into Windows 11.
+Start Menu and desktop shortcuts are created. Update with `scoop update pennyframe`; remove with `scoop uninstall pennyframe`.
+
+**macOS: Homebrew.** This repo is also a Homebrew tap (macOS builds start with v0.3.0).
+
+```bash
+brew tap Kollefranz/pennyframe https://github.com/Kollefranz/pennyframe
+brew install --cask pennyframe
+```
+
+Update with `brew update && brew upgrade --cask pennyframe`. The app is ad-hoc signed but not notarized by Apple; the cask clears the download quarantine flag so it opens normally. If you download the zip by hand instead, right-click the app and choose *Open* the first time.
+
+Your images, settings and keys live outside the install folder, so updating or uninstalling never touches them. Windows needs the Microsoft Edge WebView2 runtime (built into Windows 11).
+
+**Updates.** Once a day Pennyframe asks GitHub whether a newer release exists (it sends nothing but a standard request; turn it off in Settings). If there is one, an *Update* button appears with the right instruction for how you installed it: the command for Scoop or Homebrew, or a download for the installer or a manual install.
 
 ## Use it
 
@@ -81,14 +98,19 @@ Plain `go build -tags desktop,production -ldflags "-H windowsgui"` also works bu
 ## Releasing
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
-The `release` workflow builds the exe, publishes `pennyframe-<version>-windows-amd64.zip` (+ `.sha256`) as a GitHub release, and commits the new version and hash to `bucket/pennyframe.json` on `main`. After that, `scoop update` picks it up. To build the same package locally: `./scripts/release.ps1 -Version 0.2.0` (needs PowerShell 7 and the wails CLI); it rewrites the manifest too, so don't commit that unless you're also publishing that exact zip.
+The `release` workflow builds the Windows zip and installer and a universal macOS app, publishes them (plus `.sha256` files) as a GitHub release, and commits the new version and hashes to `bucket/pennyframe.json` (Scoop) and `Casks/pennyframe.rb` (Homebrew) on `main`. After that, `scoop update` / `brew upgrade` and the in-app update check pick it up.
+
+To rehearse without publishing, run the workflow by hand (Actions → release → *Run workflow*, enter a version): it builds every package and uploads them as workflow artifacts only.
+
+Locally: `./scripts/package-windows.ps1 -Version 0.3.0` (PowerShell 7, the wails CLI and [Inno Setup](https://jrsoftware.org/isinfo.php); `-NoInstaller` skips Inno) or `./scripts/package-macos.sh 0.3.0` on a Mac. Both write to `dist/`. `scripts/update-manifests.ps1` is what points the manifests at those files, so don't commit its changes unless you also publish those exact files.
 
 ## Development
 
 - `OPENROUTER_BASE_URL` / `OPENROUTER_AUTH_URL` point the client at another API / sign-in page (proxy, mock).
+- `PENNYFRAME_UPDATE_URL` points the update check at another "latest release" JSON endpoint (testing).
 - `PENNYFRAME_DATA_DIR` uses an isolated profile (config, thumbs, `images/`).
 - `go run -tags devserver .` serves the UI at http://127.0.0.1:8800 over a small RPC bridge so it can be driven in a normal browser (requires `PENNYFRAME_DATA_DIR`). File dialogs are not available there.
 
