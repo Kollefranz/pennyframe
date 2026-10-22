@@ -1,6 +1,6 @@
 cask "pennyframe" do
   version "0.3.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "4ea26d6aeb158714d207973b880d1f74d2ec7b25879b48a910ef21896a1a104c"
 
   url "https://github.com/Kollefranz/pennyframe/releases/download/v#{version}/pennyframe-#{version}-macos-universal.zip"
   name "Pennyframe"
