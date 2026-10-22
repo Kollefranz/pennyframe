@@ -8,7 +8,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
-    [string]$Repo = 'Kollefranz/pennyframe'
+    [string]$Repo = 'Kollefranz/pennyframe',
+    # CI already ran the tests on the tagged commit.
+    [switch]$SkipTests
 )
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
@@ -17,8 +19,10 @@ if (-not (Get-Command wails -ErrorAction SilentlyContinue)) {
     throw 'wails CLI not found. Install it: go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0'
 }
 
-go test ./...
-if ($LASTEXITCODE) { throw 'tests failed' }
+if (-not $SkipTests) {
+    go test ./...
+    if ($LASTEXITCODE) { throw 'tests failed' }
+}
 
 wails build -s -clean -platform windows/amd64 -ldflags "-X main.version=$Version"
 if ($LASTEXITCODE) { throw 'wails build failed' }

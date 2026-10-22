@@ -11,6 +11,7 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -25,7 +26,7 @@ jobs:
 
       - name: Build, package, update manifest
         shell: pwsh
-        run: ./scripts/release.ps1 -Version ('${{ github.ref_name }}' -replace '^v', '') -Repo '${{ github.repository }}'
+        run: ./scripts/release.ps1 -Version ('${{ github.ref_name }}' -replace '^v', '') -Repo '${{ github.repository }}' -SkipTests
 
       - name: Create GitHub release
         shell: bash
