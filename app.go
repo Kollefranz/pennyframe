@@ -713,6 +713,23 @@ func (a *App) resolveRefs(refs []string) ([]string, error) {
 
 func (a *App) SetFavorite(id string, fav bool) error { return a.gallery().SetFavorite(id, fav) }
 
+// SetFavorites and ArchiveImages apply to every id and report all failures together.
+func (a *App) SetFavorites(ids []string, fav bool) error {
+	return a.each(ids, func(id string) error { return a.gallery().SetFavorite(id, fav) })
+}
+
+func (a *App) ArchiveImages(ids []string, archived bool) error {
+	return a.each(ids, func(id string) error { return a.gallery().SetArchived(id, archived) })
+}
+
+func (a *App) each(ids []string, fn func(string) error) error {
+	var errs []error
+	for _, id := range ids {
+		errs = append(errs, fn(id))
+	}
+	return errors.Join(errs...)
+}
+
 func (a *App) DeleteImages(ids []string) error {
 	var errs []error
 	for _, id := range ids {

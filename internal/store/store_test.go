@@ -144,3 +144,31 @@ func TestSVGHasNoThumb(t *testing.T) {
 		t.Fatalf("want ErrNoThumb, got %v", err)
 	}
 }
+
+func TestArchivePersistsAndKeepsFiles(t *testing.T) {
+	dir := t.TempDir()
+	g, _ := OpenGallery(dir, t.TempDir())
+	a, _ := g.Add(Meta{Prompt: "a"}, pngBytes(10, 10, 255))
+	b, _ := g.Add(Meta{Prompt: "b"}, pngBytes(10, 10, 255))
+	if err := g.SetArchived(a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	g2, _ := OpenGallery(dir, t.TempDir())
+	ga, _ := g2.Get(a.ID)
+	gb, _ := g2.Get(b.ID)
+	if !ga.Archived || gb.Archived {
+		t.Fatalf("archived flag lost or leaked: a=%v b=%v", ga.Archived, gb.Archived)
+	}
+	if _, ok := g2.Path(a.ID); !ok || len(g2.List()) != 2 {
+		t.Fatal("archived images must stay in the gallery data")
+	}
+	if err := g2.SetArchived(a.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := g2.Get(a.ID); got.Archived {
+		t.Fatal("unarchive failed")
+	}
+	if err := g2.SetArchived("missing", true); err == nil {
+		t.Fatal("expected error for unknown id")
+	}
+}

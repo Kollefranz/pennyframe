@@ -46,6 +46,7 @@ type Meta struct {
 	Seconds   float64        `json:"seconds"`
 	Batch     string         `json:"batch"`
 	Favorite  bool           `json:"favorite"`
+	Archived  bool           `json:"archived,omitempty"`
 	CreatedAt time.Time      `json:"createdAt"`
 }
 
@@ -175,20 +176,30 @@ func (g *Gallery) writeMeta(m *Meta) error {
 	return writeFileAtomic(filepath.Join(g.dir, m.ID+".json"), b)
 }
 
-func (g *Gallery) SetFavorite(id string, fav bool) error {
+// Update applies fn to the stored metadata and persists it, rolling back if the write fails.
+func (g *Gallery) Update(id string, fn func(*Meta)) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	m, ok := g.items[id]
 	if !ok {
 		return errors.New("no such image")
 	}
-	prev := m.Favorite
-	m.Favorite = fav
+	prev := *m
+	fn(m)
 	if err := g.writeMeta(m); err != nil {
-		m.Favorite = prev
+		*m = prev
 		return err
 	}
 	return nil
+}
+
+func (g *Gallery) SetFavorite(id string, fav bool) error {
+	return g.Update(id, func(m *Meta) { m.Favorite = fav })
+}
+
+// SetArchived hides an image from the main view without deleting anything.
+func (g *Gallery) SetArchived(id string, archived bool) error {
+	return g.Update(id, func(m *Meta) { m.Archived = archived })
 }
 
 func (g *Gallery) Delete(id string) error {

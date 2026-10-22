@@ -40,10 +40,11 @@ const fmtSecs = (s) => (s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s
 const fmtBytes = (b) => (b > 1 << 20 ? (b / (1 << 20)).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB");
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
-function toast(msg, isErr) {
-  const t = h("div", { class: "toast" + (isErr ? " err" : "") }, msg);
+function toast(msg, isErr, action) {
+  const t = h("div", { class: "toast" + (isErr ? " err" : "") }, msg,
+    action ? h("button", { class: "link", onclick: () => { t.remove(); action.fn(); } }, action.label) : null);
   $("toasts").append(t);
-  setTimeout(() => t.remove(), isErr ? 7000 : 2600);
+  setTimeout(() => t.remove(), isErr || action ? 7000 : 2600);
 }
 
 // ---------- state ----------
@@ -56,7 +57,9 @@ const S = {
   early: new Map(), // events that arrived before Generate() returned
   keyStatus: new Map(),
   refs: [], // {src, preview}
-  filter: { q: "", fav: false, model: "" },
+  filter: { q: "", fav: false, model: "", archived: false },
+  sel: new Set(), // selected image ids (always a subset of what's visible)
+  anchor: null, // last clicked id, start of a shift-click range
   outputDir: "",
   prefs: { favorites: [], recents: [], selected: [], params: {}, prompt: "", thumb: 220 },
 };
@@ -660,7 +663,7 @@ const els = new Map(); // key -> element
 function filteredImages() {
   const { q, fav, model } = S.filter, needle = q.trim().toLowerCase();
   return S.images.filter((m) =>
-    (!fav || m.favorite) && (!model || m.model === model) &&
+    !!m.archived === S.filter.archived && (!fav || m.favorite) && (!model || m.model === model) &&
     (!needle || `${m.prompt} ${m.modelName} ${m.model}`.toLowerCase().includes(needle)));
 }
 
@@ -708,8 +711,13 @@ function imageCard(m) {
   const key = "img:" + m.id;
   let el = els.get(key);
   if (!el) {
-    el = h("div", { class: "card", tabindex: 0, role: "button", "aria-label": m.prompt, onclick: () => openViewer(m.id),
-      onkeydown: (e) => { if (e.key === "Enter") openViewer(m.id); } },
+    el = h("div", { class: "card", tabindex: 0, role: "button", "aria-label": m.prompt,
+      onclick: (e) => (e.shiftKey || e.ctrlKey || e.metaKey || S.sel.size ? selectClick(m.id, e) : openViewer(m.id)),
+      onkeydown: (e) => {
+        if (e.key === "Enter") openViewer(m.id);
+        else if (e.key === " ") { e.preventDefault(); selectClick(m.id, e); }
+      } },
+      h("button", { class: "pick", type: "button", tabindex: -1, "aria-label": "Select", onclick: (e) => { e.stopPropagation(); selectClick(m.id, e); } }, "✓"),
       h("img", { src: "/thumb/" + m.id, loading: "lazy", decoding: "async", alt: m.prompt, draggable: false }),
       h("div", { class: "shade" }, h("b", {}, m.modelName), h("i", {}, (m.seconds ? fmtSecs(m.seconds) + " · " : "") + m.prompt)),
       h("button", { class: "star", "aria-label": "Favorite", onclick: (e) => { e.stopPropagation(); toggleImageFav(m.id); } }, "★"));
@@ -718,12 +726,13 @@ function imageCard(m) {
   const r = m.width && m.height ? m.width / m.height : 1;
   el.style.setProperty("--r", Math.min(3, Math.max(0.4, r)).toFixed(4));
   el.querySelector(".star").className = "star" + (m.favorite ? " on" : "");
+  el.classList.toggle("sel", S.sel.has(m.id));
   return el;
 }
 
 function renderGrid() {
   const grid = $("grid"), want = [];
-  const jobs = [...S.jobs.values()].reverse();
+  const jobs = S.filter.archived ? [] : [...S.jobs.values()].reverse();
   for (const j of jobs) want.push(jobCard(j));
   const imgs = filteredImages();
   for (const m of imgs) want.push(imageCard(m));
@@ -733,18 +742,25 @@ function renderGrid() {
   const live = new Set(want);
   for (const [k, el] of els) if (!live.has(el)) els.delete(k);
 
-  $("count").textContent = imgs.length === S.images.length ? `${imgs.length} images` : `${imgs.length} of ${S.images.length}`;
+  const archivedN = S.images.filter((m) => m.archived).length, pool = S.filter.archived ? archivedN : S.images.length - archivedN;
+  $("count").textContent = S.filter.archived ? `${imgs.length} archived` : imgs.length === pool ? `${imgs.length} images` : `${imgs.length} of ${pool}`;
+  $("archivedToggle").textContent = archivedN ? `Archived (${archivedN})` : "Archived";
   renderEmpty();
+  renderSelBar();
   refreshModelFilter();
 }
 
 function renderEmpty() {
   const e = $("empty");
-  const noKey = !S.keys.length, none = !S.images.length && !S.jobs.size;
-  e.hidden = !(noKey || none || (!filteredImages().length && !S.jobs.size));
+  const noKey = !S.keys.length && !S.filter.archived;
+  const none = S.filter.archived ? !S.images.some((m) => m.archived) : !S.images.length && !S.jobs.size;
+  e.hidden = !(noKey || none || (!filteredImages().length && (S.filter.archived || !S.jobs.size)));
   if (e.hidden) return;
   clear(e);
-  if (noKey) {
+  if (S.filter.archived && none) {
+    e.append(h("h2", {}, "Nothing archived"),
+      h("p", {}, "Select images and choose Archive to hide them from the main view without deleting them."));
+  } else if (noKey) {
     e.append(h("div", { class: "penny" }), h("h2", {}, "Welcome to Pennyframe"),
       h("p", {}, "Connect your OpenRouter account to start making images — one click, and OpenRouter walks you through signing in. You can connect several keys and switch between them with Alt+1…9."),
       h("button", { class: "btn primary big", onclick: startConnect }, "Connect with OpenRouter"));
@@ -766,6 +782,112 @@ function refreshModelFilter() {
   sel.append(h("option", { value: "" }, "All models"));
   for (const [id, name] of [...seen].sort((a, b) => a[1].localeCompare(b[1]))) sel.append(h("option", { value: id }, name));
   sel.value = S.filter.model;
+}
+
+// ---------- selection ----------
+const visibleIds = () => filteredImages().map((m) => m.id);
+
+function selectClick(id, e) {
+  const ids = visibleIds();
+  if (e.shiftKey && S.anchor && ids.includes(S.anchor)) {
+    const a = ids.indexOf(S.anchor), b = ids.indexOf(id);
+    if (!(e.ctrlKey || e.metaKey)) S.sel = new Set();
+    ids.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((x) => S.sel.add(x));
+  } else {
+    S.sel.has(id) ? S.sel.delete(id) : S.sel.add(id);
+    S.anchor = id;
+  }
+  paintSelection();
+}
+
+function clearSelection() {
+  if (!S.sel.size) return;
+  S.sel = new Set();
+  S.anchor = null;
+  paintSelection();
+}
+
+function paintSelection() {
+  const vis = new Set(visibleIds());
+  for (const id of [...S.sel]) if (!vis.has(id)) S.sel.delete(id);
+  for (const m of S.images) els.get("img:" + m.id)?.classList.toggle("sel", S.sel.has(m.id));
+  $("grid").classList.toggle("selecting", S.sel.size > 0);
+  renderSelBar();
+}
+
+let deleteArmed = null;
+
+function renderSelBar() {
+  const bar = $("selbar"), n = S.sel.size;
+  bar.hidden = n === 0;
+  document.querySelector(".toolbar:not(.selbar)").hidden = n > 0;
+  if (!n) { deleteArmed = null; return; }
+  const ids = [...S.sel], picked = S.images.filter((m) => S.sel.has(m.id));
+  const allFav = picked.every((m) => m.favorite), archivedView = S.filter.archived, total = visibleIds().length;
+  clear(bar);
+  put(bar,
+    h("b", {}, `${n} selected`),
+    n < total ? h("button", { class: "btn sm", onclick: selectAll }, `Select all ${total}`) : null,
+    h("div", { class: "spacer" }),
+    h("button", { class: "btn", onclick: () => bulkFavorite(ids, !allFav) }, allFav ? "☆ Unfavorite" : "★ Favorite"),
+    h("button", { class: "btn", onclick: () => bulkArchive(ids, !archivedView) }, archivedView ? "Unarchive" : "Archive"),
+    deleteArmed
+      ? [h("span", { class: "warn-text" }, `Delete ${n} permanently?`),
+         h("button", { class: "btn danger", onclick: () => bulkDelete(ids) }, "Yes, delete"),
+         h("button", { class: "btn", onclick: () => { deleteArmed = null; renderSelBar(); } }, "Keep")]
+      : h("button", { class: "btn danger", onclick: armDelete }, "Delete"),
+    h("button", { class: "btn icon", title: "Clear selection (Esc)", "aria-label": "Clear selection", onclick: clearSelection }, "✕"));
+}
+
+function selectAll() {
+  S.sel = new Set(visibleIds());
+  paintSelection();
+}
+
+function armDelete() {
+  const token = (deleteArmed = {});
+  renderSelBar();
+  setTimeout(() => { if (deleteArmed === token) { deleteArmed = null; renderSelBar(); } }, 6000);
+}
+
+async function bulkFavorite(ids, fav) {
+  try {
+    await go().SetFavorites(ids, fav);
+    S.images.forEach((m) => { if (S.sel.has(m.id)) m.favorite = fav; });
+    renderGrid();
+  } catch (e) { toast(errText(e), true); }
+}
+
+async function bulkArchive(ids, archived) {
+  try {
+    await go().ArchiveImages(ids, archived);
+    const set = new Set(ids);
+    S.images.forEach((m) => { if (set.has(m.id)) m.archived = archived; });
+    S.sel = new Set();
+    renderGrid();
+    paintSelection();
+    const word = ids.length === 1 ? "image" : "images";
+    toast(`${archived ? "Archived" : "Moved back"} ${ids.length} ${word}`, false, { label: "Undo", fn: () => bulkArchive(ids, !archived) });
+  } catch (e) { toast(errText(e), true); }
+}
+
+async function bulkDelete(ids) {
+  deleteArmed = null;
+  try {
+    await go().DeleteImages(ids);
+    const set = new Set(ids);
+    S.images = S.images.filter((m) => !set.has(m.id));
+    S.sel = new Set();
+    renderGrid();
+    paintSelection();
+    toast(`Deleted ${ids.length} ${ids.length === 1 ? "image" : "images"}`);
+  } catch (e) {
+    // some may have been removed already; reload what is really on disk
+    try { S.images = (await go().Bootstrap()).images || []; } catch { /* keep list */ }
+    S.sel = new Set();
+    renderGrid();
+    toast(errText(e), true);
+  }
 }
 
 async function toggleImageFav(id) {
@@ -836,9 +958,17 @@ function renderViewer() {
       h("button", { class: "btn", onclick: () => toggleImageFav(m.id) }, m.favorite ? "★ Favorited" : "☆ Favorite"),
       h("button", { class: "btn", onclick: () => copyImage(m.id) }, "Copy image"),
       h("button", { class: "btn", onclick: () => navigator.clipboard.writeText(m.prompt).then(() => toast("Prompt copied")) }, "Copy prompt"),
+      h("button", { class: "btn", onclick: () => viewerArchive(m) }, m.archived ? "Unarchive" : "Archive"),
       h("button", { class: "btn", onclick: () => saveAs(m.id) }, "Save as…"),
       h("button", { class: "btn", onclick: () => go().RevealImage(m.id) }, "Show in folder"),
       deleteButton(m.id)));
+}
+
+async function viewerArchive(m) {
+  const list = viewList(), i = list.findIndex((x) => x.id === m.id);
+  const next = list[i + 1] || list[i - 1];
+  await bulkArchive([m.id], !m.archived);
+  if (next) { viewId = next.id; renderViewer(); } else $("dlgView").close();
 }
 
 function deleteButton(id) {
@@ -989,12 +1119,20 @@ function wire() {
   ["dragleave", "drop"].forEach((t) => compose.addEventListener(t, () => $("refs").classList.remove("drop")));
   compose.addEventListener("drop", (e) => { e.preventDefault(); addFiles(e.dataTransfer.files); });
 
-  $("search").addEventListener("input", debounce((e) => { S.filter.q = e.target.value; renderGrid(); }, 120));
-  $("modelFilter").onchange = (e) => { S.filter.model = e.target.value; renderGrid(); };
+  $("search").addEventListener("input", debounce((e) => { S.filter.q = e.target.value; renderGrid(); paintSelection(); }, 120));
+  $("modelFilter").onchange = (e) => { S.filter.model = e.target.value; renderGrid(); paintSelection(); };
   $("favOnly").onclick = (e) => {
     S.filter.fav = !S.filter.fav;
     e.currentTarget.setAttribute("aria-pressed", S.filter.fav);
     renderGrid();
+    paintSelection();
+  };
+  $("archivedToggle").onclick = (e) => {
+    S.filter.archived = !S.filter.archived;
+    e.currentTarget.setAttribute("aria-pressed", S.filter.archived);
+    S.sel = new Set();
+    renderGrid();
+    paintSelection();
   };
   $("thumbSize").addEventListener("input", (e) => {
     document.documentElement.style.setProperty("--thumb", e.target.value + "px");
@@ -1027,6 +1165,12 @@ function wire() {
       else if (e.key.toLowerCase() === "f") toggleImageFav(viewId);
     }
     if (e.key === "Escape") closeKeyMenu();
+    const typing = /input|textarea|select/i.test(e.target.tagName) || e.target.isContentEditable;
+    if (!document.querySelector("dialog[open]") && !typing) {
+      if (mod && e.key.toLowerCase() === "a") { e.preventDefault(); selectAll(); }
+      else if (e.key === "Escape") clearSelection();
+      else if (e.key === "Delete" && S.sel.size) { e.preventDefault(); armDelete(); }
+    }
   });
 
   // live elapsed timers on running job cards

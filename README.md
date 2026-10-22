@@ -26,12 +26,16 @@ That puts Pennyframe in the Start Menu and on the desktop. Update with `scoop up
 | `Alt+1…9` | Switch API key |
 | `Ctrl+Shift+K` | Open the key menu (switch, add, details) |
 | `←` `→` `F` | Previous / next / favorite in the viewer |
+| `Ctrl`/`Shift`+click | Select several images (Shift = range); then Favorite, Archive or Delete them |
+| `Ctrl+A` · `Esc` · `Del` | Select all · clear selection · delete selection |
 
 **Quick model switching:** pinned (★) and recent models sit in the top bar; click to switch, Ctrl/Shift-click to add to a comparison. With several models selected, one prompt runs on all of them in parallel and the results land side by side.
 
 **Live previews.** Models that support streaming show partial renders on the card as they arrive (toggle under the settings; single-image requests only). If a provider rejects streaming, the request is retried normally.
 
 **Settings adapt to the model.** Aspect ratio, resolution, quality, format, background, count, seed and compression controls come from each model's capabilities (`/api/v1/images/models`). Anything a model can't do is dropped with a note rather than failing the request.
+
+**Archive** hides images from the main view but keeps them (and their metadata) on disk; open **Archived** in the toolbar to see or restore them. Delete removes the files permanently after a confirmation.
 
 Images are saved to `~/Pictures/Pennyframe` (changeable) as the original bytes plus a `.json` sidecar (prompt, model, params, cost, time, key name). Thumbnails are cached under `%APPDATA%\Pennyframe\thumbs`. Reference images (image-to-image) can be dropped, pasted, or taken from the gallery.
 
