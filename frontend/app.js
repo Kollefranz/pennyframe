@@ -1235,8 +1235,8 @@ function openUpdateDialog(info) {
   if (cmd) {
     $("upCmdText").textContent = info.command;
     $("upCmdHint").textContent = info.method === "scoop"
-      ? "Run it in PowerShell. Pennyframe closes while it updates; open it again afterwards."
-      : "Run it in Terminal. Quit Pennyframe first, then open it again afterwards.";
+      ? "Quit Pennyframe first (Scoop won't update a running app), then run this in PowerShell and open Pennyframe again."
+      : "Quit Pennyframe first, then run this in Terminal and open Pennyframe again.";
   } else {
     $("upDownload").textContent = info.method === "installer" ? "Download the new installer" : "Download update";
     $("upDlHint").textContent = info.method === "installer"
