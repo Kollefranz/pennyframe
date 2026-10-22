@@ -38,6 +38,7 @@ type App struct {
 
 	mu      sync.Mutex
 	models  []openrouter.Model
+	quality Quality
 	fetched time.Time
 	priced  time.Time
 	jobs    map[string]context.CancelFunc
@@ -71,6 +72,7 @@ func NewApp(cfg *store.Config, gal *store.Gallery) *App {
 		}
 	}
 	a.loadModelCache()
+	a.loadQuality()
 	return a
 }
 
@@ -96,6 +98,7 @@ type Boot struct {
 	Prefs     string             `json:"prefs"`
 	OutputDir string             `json:"outputDir"`
 	EnvKey    bool               `json:"envKey"`
+	Quality   Quality            `json:"quality"`
 }
 
 // Bootstrap returns everything the UI needs for first paint, without touching the network.
@@ -110,6 +113,7 @@ func (a *App) Bootstrap() Boot {
 		Prefs:     a.cfg.Prefs(),
 		OutputDir: a.cfg.OutputDir(),
 		EnvKey:    os.Getenv("OPENROUTER_API_KEY") != "",
+		Quality:   a.qualitySnapshot(),
 	}
 }
 
@@ -312,7 +316,7 @@ func (a *App) RemoveKey(id string) ([]KeyView, error) {
 // ---------- models ----------
 
 // priceFormat is bumped whenever PriceSummary's rules change, so stale cached labels are dropped.
-const priceFormat = 2
+const priceFormat = 3
 
 type modelCache struct {
 	Format  int                `json:"format"`
@@ -335,7 +339,7 @@ func (a *App) loadModelCache() {
 	a.models, a.fetched, a.priced = c.Models, c.Fetched, c.Priced
 	if c.Format != priceFormat {
 		for i := range a.models {
-			a.models[i].Price = ""
+			a.models[i].Price, a.models[i].PriceMin, a.models[i].PriceMax = "", 0, 0
 		}
 		a.priced = time.Time{}
 	}
@@ -369,12 +373,13 @@ func (a *App) RefreshModels(force bool) ([]openrouter.Model, error) {
 		return nil, fmt.Errorf("loading models: %w", err)
 	}
 	a.mu.Lock()
-	old := map[string]string{}
+	old := map[string]openrouter.Model{}
 	for _, m := range a.models {
-		old[m.ID] = m.Price
+		old[m.ID] = m
 	}
 	for i := range list {
-		list[i].Price = old[list[i].ID]
+		o := old[list[i].ID]
+		list[i].Price, list[i].PriceMin, list[i].PriceMax = o.Price, o.PriceMin, o.PriceMax
 	}
 	a.models, a.fetched = list, time.Now()
 	a.saveModelCacheLocked()
@@ -416,14 +421,15 @@ func (a *App) fetchPrices(all bool) {
 					continue
 				}
 				price := openrouter.PriceSummary(eps)
+				lo, hi, _ := openrouter.PriceRange(eps)
 				a.mu.Lock()
 				for i := range a.models {
 					if a.models[i].ID == id {
-						a.models[i].Price = price
+						a.models[i].Price, a.models[i].PriceMin, a.models[i].PriceMax = price, lo, hi
 					}
 				}
 				a.mu.Unlock()
-				a.emit("model:price", map[string]string{"id": id, "price": price})
+				a.emit("model:price", map[string]any{"id": id, "price": price, "min": lo, "max": hi})
 			}
 		}()
 	}
@@ -448,6 +454,62 @@ func (a *App) model(id string) (openrouter.Model, bool) {
 		}
 	}
 	return openrouter.Model{}, false
+}
+
+// ---------- quality ratings ----------
+
+const qualityTTL = 24 * time.Hour
+
+// Quality holds crowd-sourced image-arena Elo ratings (Design Arena, via OpenRouter's benchmarks API).
+type Quality struct {
+	Scores  []openrouter.ArenaScore `json:"scores"`
+	Meta    openrouter.BenchMeta    `json:"meta"`
+	Fetched time.Time               `json:"fetched"`
+}
+
+func (a *App) qualityPath() string { return filepath.Join(a.cfg.Dir(), "quality.json") }
+
+func (a *App) loadQuality() {
+	if b, err := os.ReadFile(a.qualityPath()); err == nil {
+		_ = json.Unmarshal(b, &a.quality)
+	}
+}
+
+func (a *App) qualitySnapshot() Quality {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.quality
+}
+
+// RefreshQuality updates the arena ratings (at most daily unless forced). It never fails loudly: ratings are
+// optional, so on any problem the cached copy (possibly empty) is returned.
+func (a *App) RefreshQuality(force bool) Quality {
+	cur := a.qualitySnapshot()
+	if !force && len(cur.Scores) > 0 && time.Since(cur.Fetched) < qualityTTL {
+		return cur
+	}
+	keyID := a.cfg.ActiveKeyID()
+	if keyID == "" {
+		return cur
+	}
+	secret, err := a.cfg.Secret(keyID)
+	if err != nil {
+		return cur
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	scores, meta, err := a.or.ImageArena(ctx, secret)
+	if err != nil || len(scores) == 0 {
+		return cur
+	}
+	q := Quality{Scores: scores, Meta: meta, Fetched: time.Now()}
+	a.mu.Lock()
+	a.quality = q
+	a.mu.Unlock()
+	if b, err := json.Marshal(q); err == nil {
+		_ = os.WriteFile(a.qualityPath(), b, 0o644)
+	}
+	return q
 }
 
 // ---------- generation ----------

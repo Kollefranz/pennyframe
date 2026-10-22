@@ -33,6 +33,8 @@ That puts Pennyframe in the Start Menu and on the desktop. Update with `scoop up
 
 **Live previews.** Models that support streaming show partial renders on the card as they arrive (toggle under the settings; single-image requests only). If a provider rejects streaming, the request is retried normally.
 
+**Value chart.** In the model picker, *Value chart* plots each model's price per image against its image-arena Elo rating (Design Arena data, fetched through OpenRouter's `/benchmarks` endpoint with your key and cached for a day). Models that nothing beats on both price and rating are marked *Best value*, and one click selects a spread of them to compare. Prices you actually paid replace list prices. Only models with a flat per-image price can be plotted; token- or size-billed models appear once you've generated with them. If OpenRouter returns no ratings, the chart and rating sorts stay hidden.
+
 **Settings adapt to the model.** Aspect ratio, resolution, quality, format, background, count, seed and compression controls come from each model's capabilities (`/api/v1/images/models`). Anything a model can't do is dropped with a note rather than failing the request.
 
 **Archive** hides images from the main view but keeps them (and their metadata) on disk; open **Archived** in the toolbar to see or restore them. Delete removes the files permanently after a confirmation.

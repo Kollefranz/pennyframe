@@ -180,8 +180,10 @@ type Model struct {
 	Architecture      Architecture          `json:"architecture"`
 	SupportedParams   map[string]Capability `json:"supported_parameters"`
 	SupportsStreaming bool                  `json:"supports_streaming"`
-	// Price is filled in from the endpoints API, not the list.
-	Price string `json:"price,omitempty"`
+	// Price (label) and PriceMin/PriceMax (USD per image) are filled in from the endpoints API, not the list.
+	Price    string  `json:"price,omitempty"`
+	PriceMin float64 `json:"price_min,omitempty"`
+	PriceMax float64 `json:"price_max,omitempty"`
 }
 
 type Architecture struct {
@@ -224,24 +226,29 @@ func (c *Client) Endpoints(ctx context.Context, modelID string) ([]Endpoint, err
 	return out.Endpoints, nil
 }
 
-// PriceSummary returns a per-image price label, or "" when no reliable per-image price exists.
+// PriceRange returns the lowest and highest flat per-image price, if any.
 // Only flat per-image pricing qualifies: token- and megapixel-billed models depend on output size and
 // token usage, so a per-image figure would be a guess. Resolution/quality tiers yield a range.
-func PriceSummary(eps []Endpoint) string {
-	lo, hi, found := 0.0, 0.0, false
+func PriceRange(eps []Endpoint) (lo, hi float64, ok bool) {
 	for _, ep := range eps {
 		for _, p := range ep.Pricing {
 			if p.Billable != "output_image" || p.Unit != "image" {
 				continue
 			}
-			if !found {
-				lo, hi, found = p.CostUSD, p.CostUSD, true
+			if !ok {
+				lo, hi, ok = p.CostUSD, p.CostUSD, true
 			}
 			lo, hi = min(lo, p.CostUSD), max(hi, p.CostUSD)
 		}
 	}
+	return lo, hi, ok
+}
+
+// PriceSummary returns a per-image price label, or "" when no reliable per-image price exists.
+func PriceSummary(eps []Endpoint) string {
+	lo, hi, ok := PriceRange(eps)
 	switch {
-	case !found:
+	case !ok:
 		return ""
 	case hi > lo*1.05:
 		return fmt.Sprintf("$%s–$%s/img", trimFloat(lo), trimFloat(hi))

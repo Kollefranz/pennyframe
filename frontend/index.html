@@ -62,10 +62,21 @@
 <dialog id="dlgModels" class="modal wide">
   <div class="modal-head">
     <input type="search" id="modelSearch" placeholder="Search models…" autocomplete="off" aria-label="Search models">
+    <select id="modelSort" aria-label="Sort models">
+      <option value="new">Newest</option>
+      <option value="value">Best value</option>
+      <option value="quality">Highest rated</option>
+      <option value="price">Lowest price</option>
+    </select>
+    <div class="seg viewseg" id="viewSeg" hidden>
+      <button type="button" id="viewList" class="on">List</button>
+      <button type="button" id="viewChart">Value chart</button>
+    </div>
     <button class="btn" id="modelsDone">Done</button>
   </div>
   <div id="modelList" class="model-list" role="listbox"></div>
-  <div class="modal-foot hint">Click a model to use it alone · tick boxes (or Ctrl/Shift-click) to compare several at once · ★ pins it to the top bar</div>
+  <div id="valueView" class="value-view" hidden></div>
+  <div class="modal-foot hint" id="modelFoot">Click a model to use it alone · tick boxes (or Ctrl/Shift-click) to compare several at once · ★ pins it to the top bar</div>
 </dialog>
 
 <dialog id="dlgKey" class="modal">

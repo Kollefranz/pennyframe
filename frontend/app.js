@@ -58,6 +58,7 @@ const S = {
   keyStatus: new Map(),
   refs: [], // {src, preview}
   filter: { q: "", fav: false, model: "", archived: false },
+  quality: { byId: new Map(), meta: {} }, // crowd-sourced image Elo by model id
   sel: new Set(), // selected image ids (always a subset of what's visible)
   anchor: null, // last clicked id, start of a shift-click range
   outputDir: "",
@@ -440,6 +441,7 @@ async function startConnect() {
     if ($("dlgKey").open) $("dlgKey").close();
     toast(`Connected! If an image fails with a credits message, add some at openrouter.ai/settings/credits`);
     loadKeyStatus(activeKey().id);
+    refreshQuality(false);
   } catch (e) {
     const m = errText(e);
     if (m !== "cancelled") {
@@ -476,6 +478,7 @@ async function saveKey(fromEnv) {
     if (res.warning) toast(res.warning, true);
     else toast(`Key “${activeKey().name}” added`);
     loadKeyStatus(activeKey().id);
+    refreshQuality(false);
   } catch (e) {
     $("keyError").textContent = errText(e);
     $("keyError").hidden = false;
@@ -485,17 +488,189 @@ async function saveKey(fromEnv) {
   }
 }
 
+// ---------- quality & value ----------
+function setQuality(q) {
+  S.quality = { byId: new Map((q?.scores || []).map((x) => [x.modelId, x])), meta: q?.meta || {} };
+  const has = S.quality.byId.size > 0;
+  $("viewSeg").hidden = !has;
+  for (const o of $("modelSort").options) if (o.value === "value" || o.value === "quality") o.disabled = !has;
+  if (!has && ["value", "quality"].includes($("modelSort").value)) $("modelSort").value = "new";
+  if (!has) showView("list");
+  if ($("dlgModels").open) renderPalette();
+}
+
+const refreshQuality = (force) => go().RefreshQuality(!!force).then(setQuality).catch(() => {});
+
+// Average billed cost per image for a model, from the user's own generations (the most trustworthy price).
+function observedCost(id) {
+  const xs = S.images.filter((m) => m.model === id && m.cost != null && m.cost > 0).map((m) => m.cost);
+  return xs.length >= 2 ? { avg: xs.reduce((a, b) => a + b, 0) / xs.length, n: xs.length } : null;
+}
+
+// Models with both a rating and a usable price; `front` marks the Pareto frontier (nothing cheaper-and-better).
+function valuePoints() {
+  const pts = [];
+  for (const m of S.models) {
+    const q = S.quality.byId.get(m.id);
+    if (!q) continue;
+    const obs = observedCost(m.id);
+    let x, lo, hi;
+    if (obs) x = lo = hi = obs.avg;
+    else if (m.price_min > 0) { lo = m.price_min; hi = m.price_max; x = Math.sqrt(lo * hi); }
+    else continue;
+    pts.push({ m, q, x, lo, hi, observed: !!obs, n: obs?.n || 0 });
+  }
+  for (const a of pts) a.front = !pts.some((b) => b !== a && b.x <= a.x && b.q.elo >= a.q.elo && (b.x < a.x || b.q.elo > a.q.elo));
+  return pts;
+}
+
+function sortModels(list) {
+  const mode = $("modelSort").value;
+  if (mode === "new") return list.sort((a, b) => b.created - a.created);
+  const pts = new Map(valuePoints().map((p) => [p.m.id, p]));
+  const elo = (m) => S.quality.byId.get(m.id)?.elo ?? -Infinity;
+  const price = (m) => pts.get(m.id)?.x ?? (m.price_min > 0 ? Math.sqrt(m.price_min * m.price_max) : Infinity);
+  if (mode === "price") return list.sort((a, b) => price(a) - price(b) || b.created - a.created);
+  if (mode === "quality") return list.sort((a, b) => elo(b) - elo(a) || b.created - a.created);
+  const rank = (m) => (pts.get(m.id)?.front ? 0 : pts.has(m.id) ? 1 : 2);
+  return list.sort((a, b) => rank(a) - rank(b) || (rank(a) === 0 ? price(a) - price(b) : elo(b) - elo(a)) || b.created - a.created);
+}
+
+let chartMode = false;
+
+function showView(v) {
+  chartMode = v === "chart" && S.quality.byId.size > 0;
+  $("viewList").classList.toggle("on", !chartMode);
+  $("viewChart").classList.toggle("on", chartMode);
+  $("modelList").hidden = chartMode;
+  $("valueView").hidden = !chartMode;
+  $("modelSort").hidden = chartMode;
+  $("modelSearch").hidden = chartMode;
+  const foot = $("modelFoot");
+  const cite = S.quality.meta?.citation || (S.quality.byId.size ? "Ratings: Design Arena image arena via OpenRouter." : "");
+  foot.textContent = chartMode || S.quality.byId.size
+    ? `${cite}${S.quality.meta?.asOf ? " As of " + new Date(S.quality.meta.asOf).toLocaleDateString() + "." : ""} Elo is a crowd-voted preference score, not a guarantee for your prompts.`
+    : "Click a model to use it alone · tick boxes (or Ctrl/Shift-click) to compare several at once · ★ pins it to the top bar";
+  if (chartMode) renderValueChart();
+}
+
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs, ...kids) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) el.append(kid.nodeType ? kid : document.createTextNode(kid));
+  return el;
+}
+
+function renderValueChart() {
+  const box = $("valueView");
+  clear(box);
+  const pts = valuePoints();
+  if (pts.length < 2) {
+    box.append(h("div", { class: "empty" }, "Not enough models with both a rating and a per-image price to compare yet."));
+    return;
+  }
+  const W = 720, H = 400, L = 62, R = 24, T = 16, B = 52;
+  const xs = pts.flatMap((p) => [p.lo, p.hi]), es = pts.map((p) => p.q.elo);
+  const x0 = Math.min(...xs) * 0.8, x1 = Math.max(...xs) * 1.3;
+  const e0 = Math.floor((Math.min(...es) - 25) / 50) * 50, e1 = Math.ceil((Math.max(...es) + 25) / 50) * 50;
+  const X = (v) => L + ((Math.log(v) - Math.log(x0)) / (Math.log(x1) - Math.log(x0))) * (W - L - R);
+  const Y = (e) => H - B - ((e - e0) / (e1 - e0)) * (H - B - T);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Price per image against arena rating for each model" });
+
+  const eStep = e1 - e0 > 300 ? 100 : 50;
+  for (let e = e0; e <= e1; e += eStep) svg.append(svgEl("line", { class: "grid", x1: L, x2: W - R, y1: Y(e), y2: Y(e) }), svgEl("text", { x: L - 8, y: Y(e) + 4, "text-anchor": "end" }, String(e)));
+  for (const t of [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1]) {
+    if (t < x0 || t > x1) continue;
+    svg.append(svgEl("line", { class: "grid", x1: X(t), x2: X(t), y1: T, y2: H - B }), svgEl("text", { x: X(t), y: H - B + 16, "text-anchor": "middle" }, money(t)));
+  }
+  svg.append(svgEl("line", { class: "axis", x1: L, x2: W - R, y1: H - B, y2: H - B }), svgEl("line", { class: "axis", x1: L, x2: L, y1: T, y2: H - B }),
+    svgEl("text", { x: (L + W - R) / 2, y: H - 10, "text-anchor": "middle" }, "Price per image (log scale) — cheaper is left"),
+    svgEl("text", { transform: `translate(14 ${(T + H - B) / 2}) rotate(-90)`, "text-anchor": "middle" }, "Arena rating (Elo) — better is up"));
+
+  const front = pts.filter((p) => p.front).sort((a, b) => a.x - b.x);
+  svg.append(svgEl("polyline", { fill: "none", stroke: "var(--ok)", "stroke-width": 2, "stroke-dasharray": "6 4", points: front.map((p) => `${X(p.x)},${Y(p.q.elo)}`).join(" ") }));
+
+  const tip = h("div", { class: "vtip", hidden: true });
+  const labels = [];
+  const picked = new Set(P().selected);
+  const showTip = (p, ev) => {
+    const spd = p.q.avgMs ? `~${fmtSecs(p.q.avgMs / 1000)} typical` : null;
+    clear(tip);
+    put(tip, h("b", {}, p.m.name),
+      h("div", {}, `Rating ${Math.round(p.q.elo)}${p.q.games ? ` from ${p.q.games} matches` : ""}`),
+      h("div", {}, p.observed ? `You paid ~${money(p.x)}/img (${p.n} images)` : `List price ${p.m.price || money(p.x)}`),
+      spd ? h("div", {}, spd) : null,
+      h("div", { class: "hint" }, p.front ? "Best value: nothing is both cheaper and better" : "A cheaper or better model beats this on both"),
+      h("div", { class: "hint" }, "Click to use · Ctrl/Shift-click to compare"));
+    const r = box.getBoundingClientRect();
+    tip.hidden = false;
+    tip.style.left = Math.min(ev.clientX - r.left + 14, r.width - 270) + "px";
+    tip.style.top = ev.clientY - r.top + box.scrollTop + 14 + "px";
+  };
+  for (const p of pts) {
+    const y = Y(p.q.elo);
+    if (p.hi > p.lo * 1.05) svg.append(svgEl("line", { x1: X(p.lo), x2: X(p.hi), y1: y, y2: y, stroke: p.front ? "var(--ok)" : "var(--faint)", "stroke-width": 2, opacity: 0.45 }));
+    const thin = p.q.games > 0 && p.q.games < 30;
+    const act = (e) => (e.ctrlKey || e.shiftKey || e.metaKey ? (toggleModel(p.m.id), renderValueChart()) : (selectModels([p.m.id]), $("dlgModels").close()));
+    svg.append(svgEl("circle", {
+      class: "dot", cx: X(p.x), cy: y, r: 7, tabindex: 0, role: "button", "aria-label": `${p.m.name}, rating ${Math.round(p.q.elo)}, ${money(p.x)} per image`,
+      fill: p.front ? "var(--ok)" : "var(--faint)", "fill-opacity": thin ? 0.3 : 1,
+      stroke: picked.has(p.m.id) ? "var(--accent)" : thin ? "var(--accent)" : "var(--bg)", "stroke-width": picked.has(p.m.id) ? 3.5 : 2,
+      onmouseenter: (e) => showTip(p, e), onmousemove: (e) => showTip(p, e), onmouseleave: () => { tip.hidden = true; },
+      onclick: act, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(e); } },
+    }));
+    if (p.front || pts.length <= 10) labels.push({ p, x: X(p.x), y });
+  }
+  // Labels sit above-right of their dot (left near the edge) and step up a line when they would overlap.
+  const placed = [];
+  for (const { p, x, y } of labels.sort((a, b) => a.x - b.x)) {
+    let name = shortName(p.m);
+    if (name.length > 28) name = name.slice(0, 27) + "…";
+    const w = name.length * 6.6, left = x + 11 + w > W - 4, lx = left ? x - 11 - w : x + 11;
+    let ly = y - 9;
+    for (let i = 0; i < 6 && placed.some((r) => Math.abs(r.y - ly) < 13 && lx < r.x + r.w && lx + w > r.x); i++) ly -= 13;
+    placed.push({ x: lx, y: ly, w });
+    svg.append(svgEl("text", { class: "lbl", x: left ? x - 11 : x + 11, y: ly, "text-anchor": left ? "end" : "start" }, name));
+  }
+
+  const plotted = new Set(pts.map((p) => p.m.id));
+  const rated = [...S.quality.byId.keys()].filter((id) => S.byId.has(id));
+  const unpriced = rated.filter((id) => !plotted.has(id)).length;
+  const mid = front.length ? [front[0], front[Math.floor((front.length - 1) / 2)], front[front.length - 1]] : [];
+  const picks = [...new Set(mid.map((p) => p.m.id))];
+  box.append(
+    h("div", { class: "vlegend" },
+      h("span", {}, h("i", { style: "background:var(--ok)" }), "Best value (on the frontier)"),
+      h("span", {}, h("i", { style: "background:var(--faint)" }), "Beaten on both price and rating"),
+      h("span", {}, h("i", { style: "background:var(--accent-soft);border:2px solid var(--accent)" }), "Few matches so far"),
+      h("div", { class: "spacer" }),
+      picks.length > 1 ? h("button", { class: "btn sm", onclick: () => {
+        selectModels(picks);
+        $("dlgModels").close();
+        toast(`Selected ${picks.length} best-value models — write a prompt and generate to compare them`);
+      } }, `Compare ${picks.length} best-value models`) : null),
+    svg, tip,
+    h("div", { class: "vnote" }, `${pts.length} models plotted. Bars show a price range that depends on resolution or quality; prices you actually paid replace list prices.` +
+      (unpriced ? ` ${unpriced} rated model${unpriced === 1 ? "" : "s"} can't be plotted: billed per token or by size, so there's no reliable per-image price yet (they appear as you generate with them).` : "")));
+}
+
 // ---------- model palette ----------
 let cur = 0;
 
 function paletteRows() {
   const q = $("modelSearch").value.trim().toLowerCase();
   let list = S.models.filter((m) => !q || `${m.name} ${m.id} ${m.description}`.toLowerCase().includes(q));
-  if (q) return [{ rows: list }];
+  if (q) return [{ rows: sortModels(list) }];
+  if ($("modelSort").value !== "new") return [{ head: "All image models", rows: sortModels(list) }];
   const fav = P().favorites.map((id) => S.byId.get(id)).filter(Boolean);
   const rec = P().recents.map((id) => S.byId.get(id)).filter((m) => m && !fav.includes(m)).slice(0, 5);
   const used = new Set([...fav, ...rec]);
-  const rest = list.filter((m) => !used.has(m)).sort((a, b) => b.created - a.created);
+  const rest = sortModels(list.filter((m) => !used.has(m)));
   return [
     { head: "Favorites", rows: fav }, { head: "Recent", rows: rec }, { head: "All image models", rows: rest },
   ].filter((g) => g.rows.length);
@@ -504,6 +679,7 @@ function paletteRows() {
 function renderPalette() {
   const box = $("modelList");
   clear(box);
+  S.frontier = new Set(valuePoints().filter((p) => p.front).map((p) => p.m.id));
   const groups = paletteRows(), flat = [];
   for (const g of groups) {
     if (g.head) box.append(h("div", { class: "ghead" }, g.head));
@@ -530,6 +706,8 @@ function modelRow(m, idx) {
     h("span", { class: "tick", title: "Add to comparison", onclick: (e) => { e.stopPropagation(); toggleModel(m.id); renderPalette(); } }, sel ? "✓" : ""),
     h("div", { class: "info" }, h("div", { class: "nm" }, m.name), h("div", { class: "id" }, m.id)),
     h("div", { class: "tags" },
+      S.frontier?.has(m.id) ? h("span", { class: "tag best", title: "Best value: no other model is both cheaper and rated higher" }, "Best value") : null,
+      S.quality.byId.has(m.id) ? h("span", { class: "tag elo", title: `Arena rating from ${S.quality.byId.get(m.id).games || "?"} matches` }, "Elo " + Math.round(S.quality.byId.get(m.id).elo)) : null,
       edit ? h("span", { class: "tag", title: "Accepts reference images" }, "edit") : null,
       m.price ? h("span", { class: "tag price", title: "Approximate cost per image. A range means price depends on resolution or quality." }, m.price) : null),
     h("button", { class: "fav" + (fav ? " on" : ""), title: fav ? "Unpin" : "Pin to top bar", "aria-label": "Favorite",
@@ -555,6 +733,7 @@ function openPalette() {
   if (d.open) return;
   $("modelSearch").value = "";
   cur = 0;
+  showView(chartMode ? "chart" : "list");
   renderPalette();
   d.showModal();
   $("modelSearch").focus();
@@ -1054,6 +1233,9 @@ function afterModelsChanged() {
 function wire() {
   $("btnModels").onclick = $("btnPick").onclick = openPalette;
   $("modelsDone").onclick = () => $("dlgModels").close();
+  $("modelSort").onchange = () => { cur = 0; renderPalette(); };
+  $("viewList").onclick = () => showView("list");
+  $("viewChart").onclick = () => showView("chart");
   $("modelSearch").addEventListener("input", () => { cur = 0; renderPalette(); });
   $("modelSearch").addEventListener("keydown", (e) => {
     const flat = $("modelList")._flat || [];
@@ -1198,12 +1380,14 @@ async function main() {
   document.documentElement.style.setProperty("--thumb", $("thumbSize").value + "px");
   $("keyEnv").hidden = !b.envKey;
   setKeys(b.keys);
+  setQuality(b.quality);
   afterModelsChanged();
   renderGrid();
   if (!S.keys.length) {
     setTimeout(() => { if (!S.keys.length) openKeyDialog(); }, 250);
   } else {
     loadKeyStatus(activeKey().id);
+    refreshQuality(false);
   }
 
   rt().EventsOn("job", applyJob);
@@ -1219,11 +1403,11 @@ async function main() {
       renderGrid();
     }).catch(() => {});
   });
-  rt().EventsOn("model:price", ({ id, price }) => {
+  rt().EventsOn("model:price", ({ id, price, min, max }) => {
     const m = S.byId.get(id);
     if (!m) return;
-    m.price = price;
-    if ($("dlgModels").open) renderPalette();
+    m.price = price; m.price_min = min; m.price_max = max;
+    if ($("dlgModels").open) { renderPalette(); if (chartMode) renderValueChart(); }
   });
   refreshModels(false);
 }

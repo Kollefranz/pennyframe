@@ -235,6 +235,23 @@ dialog::backdrop { background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
 .mrow .tags { display: flex; gap: 5px; align-items: center; flex: none; }
 .tag { font-size: 11px; color: var(--dim); background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
 .tag.price { color: var(--text); }
+.modal-head select { width: auto; flex: none; }
+.viewseg { flex: none; flex-wrap: nowrap; }
+.tag.elo { color: var(--text); }
+.tag.best { color: var(--accent-ink); background: var(--accent); border-color: transparent; font-weight: 600; }
+.value-view { overflow-y: auto; flex: 1; padding: 12px 16px; min-height: 200px; display: flex; flex-direction: column; gap: 10px; position: relative; }
+.value-view svg { width: 100%; height: auto; display: block; }
+.value-view .axis { stroke: var(--line); stroke-width: 1; }
+.value-view .grid { stroke: var(--line); stroke-width: .5; opacity: .6; }
+.value-view text { fill: var(--dim); font-size: 11px; }
+.value-view text.lbl { fill: var(--text); font-size: 12px; }
+.value-view .dot { cursor: pointer; }
+.value-view .dot:focus-visible { outline: none; stroke: var(--text); stroke-width: 2.5; }
+.vlegend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--dim); align-items: center; }
+.vlegend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+.vtip { position: absolute; pointer-events: none; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: var(--shadow); z-index: 5; max-width: 260px; }
+.vtip b { display: block; font-size: 13px; margin-bottom: 2px; }
+.vnote { font-size: 12px; color: var(--faint); }
 .mrow .fav { background: none; border: 0; cursor: pointer; font-size: 17px; color: var(--faint); padding: 2px 5px; border-radius: 6px; }
 .mrow .fav:hover { background: var(--raised); }
 .mrow .fav.on { color: #ffcf6e; }
