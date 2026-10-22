@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pennyframe</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><span class="penny"></span>Pennyframe</div>
+    <div class="quick" id="quick"></div>
+    <button class="btn" id="btnModels" title="Browse models (Ctrl+K)">Models <kbd>Ctrl K</kbd></button>
+    <div class="spacer"></div>
+    <div class="keyswitch">
+      <button class="btn keybtn" id="btnKey" title="Switch or add API keys (Ctrl+Shift+K · Alt+1…9)"></button>
+      <div class="menu" id="keyMenu" hidden></div>
+    </div>
+    <button class="btn icon" id="btnAddKey" title="Add another API key" aria-label="Add API key">＋</button>
+    <button class="btn icon" id="btnSettings" title="Settings" aria-label="Settings">⚙</button>
+  </header>
+
+  <div class="body">
+    <aside class="compose" id="compose">
+      <section>
+        <div class="label-row"><span class="label">Models</span><button class="link" id="btnPick">Choose…</button></div>
+        <div id="selected" class="chips"></div>
+      </section>
+      <section class="grow">
+        <div class="label-row"><span class="label">Prompt</span><span class="hint" id="promptHint"></span></div>
+        <textarea id="prompt" placeholder="A copper coin on a windowsill, soft morning light…" spellcheck="true"></textarea>
+      </section>
+      <section>
+        <div class="label-row"><span class="label">Reference images</span><button class="link" id="btnAddRef">Add…</button></div>
+        <div id="refs" class="refs"></div>
+        <input type="file" id="refFile" accept="image/*" multiple hidden>
+      </section>
+      <section id="params" class="params"></section>
+      <button class="btn primary big" id="go">Generate</button>
+    </aside>
+
+    <main class="stage">
+      <div class="toolbar">
+        <input type="search" id="search" placeholder="Search prompts and models…" aria-label="Search">
+        <select id="modelFilter" aria-label="Filter by model"></select>
+        <button class="btn toggle" id="favOnly" aria-pressed="false">★ Favorites</button>
+        <div class="spacer"></div>
+        <span class="hint" id="count"></span>
+        <input type="range" id="thumbSize" min="140" max="420" step="10" aria-label="Thumbnail size">
+      </div>
+      <div class="scroll" id="scroll">
+        <div id="grid"></div>
+        <div id="empty" class="empty" hidden></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<dialog id="dlgModels" class="modal wide">
+  <div class="modal-head">
+    <input type="search" id="modelSearch" placeholder="Search models…" autocomplete="off" aria-label="Search models">
+    <button class="btn" id="modelsDone">Done</button>
+  </div>
+  <div id="modelList" class="model-list" role="listbox"></div>
+  <div class="modal-foot hint">Click a model to use it alone · tick boxes (or Ctrl/Shift-click) to compare several at once · ★ pins it to the top bar</div>
+</dialog>
+
+<dialog id="dlgKey" class="modal">
+  <form method="dialog" id="keyForm" class="form">
+    <h2>Add OpenRouter API key</h2>
+    <label>Name <span class="hint">(optional)</span>
+      <input type="text" id="keyName" placeholder="Personal, Work, Free tier…" autocomplete="off">
+    </label>
+    <label>API key
+      <div class="row">
+        <input type="password" id="keySecret" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false">
+        <button type="button" class="btn" id="keyReveal">Show</button>
+      </div>
+    </label>
+    <p class="hint">Stored in your OS credential vault, never in a file. Get one at <a href="#" id="linkKeys">openrouter.ai/keys</a>.</p>
+    <p class="error" id="keyError" hidden></p>
+    <div class="row end">
+      <button type="button" class="btn" id="keyEnv" hidden>Use OPENROUTER_API_KEY</button>
+      <button type="button" class="btn" id="keyCancel">Cancel</button>
+      <button type="submit" class="btn primary" id="keySave">Save key</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgKeyInfo" class="modal">
+  <div class="form">
+    <h2 id="kiTitle"></h2>
+    <div class="field">
+      <span class="label">API key</span>
+      <div class="row">
+        <input type="text" id="kiSecret" readonly spellcheck="false" aria-label="API key">
+        <button class="btn" id="kiReveal">Show</button>
+        <button class="btn" id="kiCopy">Copy</button>
+      </div>
+      <span class="hint">Encrypted at rest in your OS credential vault (Windows Credential Manager).</span>
+    </div>
+    <div><button class="btn" id="kiMore">Show more info</button></div>
+    <dl class="kv" id="kiInfo" hidden></dl>
+    <p class="error" id="kiError" hidden></p>
+    <div class="row end"><button class="btn primary" id="kiClose">Close</button></div>
+  </div>
+</dialog>
+
+<dialog id="dlgSettings" class="modal">
+  <div class="form">
+    <h2>Settings</h2>
+    <div class="field">
+      <span class="label">Image folder</span>
+      <code id="outDir"></code>
+      <div class="row"><button class="btn" id="outChange">Change…</button><button class="btn" id="outOpen">Open</button></div>
+    </div>
+    <div class="field">
+      <span class="label">Model catalog</span>
+      <span class="hint" id="modelStats"></span>
+      <div class="row"><button class="btn" id="modelsRefresh">Refresh list</button></div>
+    </div>
+    <div class="row end"><span class="hint" id="appVersion" style="margin-right:auto"></span><button class="btn primary" id="settingsClose">Close</button></div>
+  </div>
+</dialog>
+
+<dialog id="dlgView" class="lightbox">
+  <div class="lb-stage" id="lbStage">
+    <button class="lb-nav prev" id="lbPrev" aria-label="Previous">‹</button>
+    <img id="lbImg" alt="">
+    <button class="lb-nav next" id="lbNext" aria-label="Next">›</button>
+    <button class="lb-close btn icon" id="lbClose" autofocus aria-label="Close">✕</button>
+  </div>
+  <aside class="lb-side" id="lbSide"></aside>
+</dialog>
+
+<div id="toasts" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>

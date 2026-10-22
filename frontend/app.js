@@ -1,0 +1,1049 @@
+"use strict";
+
+// ---------- bridge to Go ----------
+const go = () => window.go.main.App;
+const rt = () => window.runtime;
+
+// ---------- helpers ----------
+const $ = (id) => document.getElementById(id);
+
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k === "style") el.style.cssText = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v === true) el.setAttribute(k, "");
+    else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    el.append(kid.nodeType ? kid : document.createTextNode(kid));
+  }
+  return el;
+}
+
+const clear = (el) => el.replaceChildren();
+// Element.append stringifies null ("null"), so drop empty children first.
+const put = (el, ...kids) => el.append(...kids.flat().filter((k) => k != null && k !== false));
+const errText = (e) => (typeof e === "string" ? e : e?.message || String(e));
+const shortName = (m) => (m.name.includes(": ") ? m.name.split(": ").slice(1).join(": ") : m.name);
+// Per-image prices are fractions of a cent, so keep up to 4 decimals (trailing zeros trimmed to 2).
+const money = (n) => {
+  let s = n.toFixed(n >= 1 ? 2 : n >= 0.1 ? 3 : 4);
+  const dot = s.indexOf(".");
+  while (s.length - dot - 1 > 2 && s.endsWith("0")) s = s.slice(0, -1);
+  return "$" + s;
+};
+const fmtSecs = (s) => (s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${s.toFixed(s < 10 ? 1 : 0)}s`);
+const fmtBytes = (b) => (b > 1 << 20 ? (b / (1 << 20)).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB");
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+
+function toast(msg, isErr) {
+  const t = h("div", { class: "toast" + (isErr ? " err" : "") }, msg);
+  $("toasts").append(t);
+  setTimeout(() => t.remove(), isErr ? 7000 : 2600);
+}
+
+// ---------- state ----------
+const S = {
+  keys: [],
+  models: [],
+  byId: new Map(),
+  images: [],
+  jobs: new Map(), // job id -> job
+  early: new Map(), // events that arrived before Generate() returned
+  keyStatus: new Map(),
+  refs: [], // {src, preview}
+  filter: { q: "", fav: false, model: "" },
+  outputDir: "",
+  prefs: { favorites: [], recents: [], selected: [], params: {}, prompt: "", thumb: 220 },
+};
+
+const savePrefs = debounce(() => go().SetPrefs(JSON.stringify(S.prefs)).catch(() => {}), 400);
+const P = () => S.prefs;
+
+function setModels(list) {
+  S.models = list || [];
+  S.byId = new Map(S.models.map((m) => [m.id, m]));
+}
+
+const activeKey = () => S.keys.find((k) => k.active);
+
+// ---------- capabilities & params ----------
+const PARAMS = [
+  { key: "aspectRatio", cap: "aspect_ratio", label: "Aspect ratio", kind: "ratio" },
+  { key: "resolution", cap: "resolution", label: "Resolution", kind: "seg" },
+  { key: "quality", cap: "quality", label: "Quality", kind: "seg" },
+  { key: "outputFormat", cap: "output_format", label: "Format", kind: "seg" },
+  { key: "background", cap: "background", label: "Background", kind: "seg" },
+  { key: "n", cap: "n", label: "Images per model", kind: "n" },
+  { key: "compression", cap: "output_compression", label: "Compression", kind: "range" },
+  { key: "seed", cap: "seed", label: "Seed", kind: "seed" },
+  { key: "stream", cap: "stream", label: "Live preview", kind: "stream" },
+];
+
+const selectedModels = () => P().selected.map((id) => S.byId.get(id)).filter(Boolean);
+
+// What the current model selection can do: union of capabilities across selected models.
+function capsUnion() {
+  const out = {};
+  for (const m of selectedModels()) {
+    if (m.supports_streaming) out.stream = { type: "boolean", values: [], min: 0, max: 0 };
+    for (const [k, c] of Object.entries(m.supported_parameters || {})) {
+      const u = (out[k] ||= { type: c.type, values: [], min: Infinity, max: 0 });
+      for (const v of c.values || []) if (v !== "auto" && !u.values.includes(v)) u.values.push(v);
+      u.min = Math.min(u.min, c.min ?? 0);
+      u.max = Math.max(u.max, c.max ?? 0);
+    }
+  }
+  return out;
+}
+
+const ratioVal = (r) => { const [a, b] = r.split(":").map(Number); return a / b; };
+
+// Params with anything the selected models can't honour zeroed out.
+function effectiveParams() {
+  const caps = capsUnion(), p = P().params, out = {};
+  if (caps.stream && p.stream !== false) out.stream = true;
+  for (const d of PARAMS) {
+    if (d.kind === "stream") continue;
+    const c = caps[d.cap], v = p[d.key];
+    if (!c || v == null || v === "") continue;
+    if ((d.kind === "ratio" || d.kind === "seg") && !c.values.includes(v)) continue;
+    out[d.key] = v;
+  }
+  if (out.n) out.n = Math.min(out.n, caps.n.max);
+  return out;
+}
+
+function renderParams() {
+  const box = $("params"), caps = capsUnion(), p = P().params;
+  clear(box);
+  const set = (k, v) => { p[k] = v; savePrefs(); renderParams(); };
+
+  for (const d of PARAMS) {
+    const c = caps[d.cap];
+    if (!c) continue;
+    let body;
+    if (d.kind === "ratio" || d.kind === "seg") {
+      let vals = [...c.values];
+      if (d.kind === "ratio") vals.sort((a, b) => ratioVal(a) - ratioVal(b));
+      else if (d.key === "resolution") vals.sort((a, b) => parseFloat(a) - parseFloat(b) || a.localeCompare(b));
+      const cur = vals.includes(p[d.key]) ? p[d.key] : "";
+      const opt = (v, label) => h("button", { class: v === cur ? "on" : "", type: "button", onclick: () => set(d.key, v) },
+        d.kind === "ratio" && v ? ratioIcon(v) : null, label);
+      body = h("div", { class: "seg" }, opt("", "Auto"), vals.map((v) => opt(v, v)));
+    } else if (d.kind === "n") {
+      const max = Math.max(1, c.max), cur = Math.min(p.n || 1, max);
+      body = h("div", { class: "stepper" },
+        h("input", { type: "range", min: 1, max, value: cur, oninput: (e) => { p.n = +e.target.value; e.target.nextSibling.textContent = p.n; savePrefs(); } }),
+        h("span", {}, String(cur)));
+      body.querySelector("input").addEventListener("change", () => renderParams());
+    } else if (d.kind === "range") {
+      const cur = p.compression ?? "";
+      body = h("div", { class: "stepper" },
+        h("input", { type: "number", min: c.min, max: c.max, placeholder: "auto", value: cur, onchange: (e) => set("compression", e.target.value === "" ? null : +e.target.value) }),
+        h("span", { class: "hint" }, `${c.min}–${c.max} (jpeg/webp)`));
+    } else if (d.kind === "stream") {
+      const on = p.stream !== false, multi = (p.n || 1) > 1;
+      body = h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: on, onchange: (e) => set("stream", e.target.checked) }),
+        h("span", {}, on ? "Show partial renders while generating" : "Wait for the final image"),
+        multi && on ? h("span", { class: "hint" }, " (single image only)") : null);
+    } else if (d.kind === "seed") {
+      body = h("div", { class: "stepper" },
+        h("input", { type: "number", placeholder: "random", value: p.seed ?? "", onchange: (e) => set("seed", e.target.value === "" ? null : Math.trunc(+e.target.value)) }),
+        h("button", { class: "btn sm", type: "button", onclick: () => set("seed", Math.floor(Math.random() * 2 ** 31)) }, "🎲"));
+    }
+    box.append(h("div", { class: "param" }, h("div", { class: "plabel" }, d.label), body));
+  }
+  if (selectedModels().length && !box.children.length) {
+    box.append(h("div", { class: "hint" }, "This model has no adjustable settings."));
+  }
+}
+
+function ratioIcon(r) {
+  const [a, b] = r.split(":").map(Number), k = 12 / Math.max(a, b);
+  return h("span", { class: "ar", style: `width:${Math.max(4, a * k)}px;height:${Math.max(4, b * k)}px` });
+}
+
+// ---------- selection / quick bar ----------
+function selectModels(ids, { silent } = {}) {
+  P().selected = ids;
+  savePrefs();
+  renderSelection();
+  if (!silent && ids.length) noteRecent(ids[ids.length - 1]);
+}
+
+function noteRecent(id) {
+  P().recents = [id, ...P().recents.filter((x) => x !== id)].slice(0, 12);
+  savePrefs();
+}
+
+function toggleModel(id) {
+  const sel = P().selected;
+  selectModels(sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
+}
+
+function renderSelection() {
+  renderQuick();
+  renderChips();
+  renderParams();
+  renderGo();
+}
+
+function renderChips() {
+  const box = $("selected");
+  clear(box);
+  const sel = selectedModels();
+  if (!sel.length) box.append(h("span", { class: "none" }, "No model chosen — press Ctrl+K"));
+  for (const m of sel) {
+    box.append(h("span", { class: "chip", title: m.id },
+      h("span", {}, shortName(m)),
+      h("button", { type: "button", "aria-label": "Remove " + m.name, onclick: () => toggleModel(m.id) }, "✕")));
+  }
+}
+
+function renderQuick() {
+  const box = $("quick");
+  clear(box);
+  const ids = [...P().favorites, ...P().recents.filter((r) => !P().favorites.includes(r)).slice(0, 4)]
+    .filter((id) => S.byId.has(id));
+  for (const id of ids) {
+    const m = S.byId.get(id), on = P().selected.includes(id);
+    box.append(h("button", {
+      class: "pill" + (on ? " on" : ""), title: `${m.name}\nClick: use alone · Ctrl/Shift-click: add to compare`,
+      onclick: (e) => (e.ctrlKey || e.shiftKey || e.metaKey ? toggleModel(id) : selectModels([id])),
+    }, (P().favorites.includes(id) ? "★ " : "") + shortName(m)));
+  }
+}
+
+function renderGo() {
+  const n = P().selected.length, b = $("go"), busy = [...S.jobs.values()].some((j) => j.state === "running" || j.state === "queued");
+  b.textContent = n > 1 ? `Generate with ${n} models` : "Generate";
+  b.append(h("kbd", { style: "color:inherit;opacity:.6" }, "Ctrl ↵"));
+  b.disabled = false;
+  b.title = busy ? "Jobs are running — you can queue more" : "";
+}
+
+// ---------- keys ----------
+function renderKeyButton() {
+  const k = activeKey(), btn = $("btnKey");
+  clear(btn);
+  if (!k) { btn.append(h("span", { class: "dot" }), "Add API key"); return; }
+  const st = S.keyStatus.get(k.id);
+  const ex = expiryInfo(st?.expiresAt);
+  put(btn, h("span", { class: "dot live" }), k.name, h("span", { class: "credit" }, creditText(st)),
+    ex?.soon ? h("span", { class: "badge warn" }, ex.text) : null);
+}
+
+// "in 2h 5m" / "expired" / date for far-off expiries
+function expiryInfo(iso) {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime() - Date.now();
+  if (Number.isNaN(ms)) return null;
+  const mins = Math.round(ms / 60000), hrs = Math.floor(mins / 60);
+  let text;
+  if (ms <= 0) text = "expired";
+  else if (mins < 60) text = `expires in ${mins}m`;
+  else if (hrs < 48) text = `expires in ${hrs}h ${mins % 60}m`;
+  else text = "expires " + new Date(iso).toLocaleDateString();
+  return { text, soon: ms < 24 * 3600 * 1000 };
+}
+
+function creditText(st) {
+  if (!st) return "";
+  if (st.error) return "—";
+  if (st.remaining != null) return money(st.remaining) + " left";
+  return money(st.usage || 0) + " used";
+}
+
+async function loadKeyStatus(id) {
+  const st = await go().KeyStatus(id);
+  S.keyStatus.set(id, st);
+  if (activeKey()?.id === id) renderKeyButton();
+  return st;
+}
+const refreshActiveStatus = debounce(() => { const k = activeKey(); if (k) loadKeyStatus(k.id); }, 800);
+
+function setKeys(keys) {
+  S.keys = keys || [];
+  renderKeyButton();
+  if (!$("keyMenu").hidden) renderKeyMenu();
+  renderEmpty();
+}
+
+let editingKey = null, armedKey = null;
+
+function renderKeyMenu() {
+  const m = $("keyMenu");
+  clear(m);
+  S.keys.forEach((k, i) => {
+    const st = S.keyStatus.get(k.id);
+    const nameEl = editingKey === k.id
+      ? h("input", { type: "text", value: k.name, class: "rename", onclick: (e) => e.stopPropagation(),
+          onkeydown: (e) => { e.stopPropagation(); if (e.key === "Enter") commitRename(k, e.target.value); else if (e.key === "Escape") { editingKey = null; renderKeyMenu(); } },
+          onblur: (e) => commitRename(k, e.target.value) })
+      : h("div", { class: "name" }, k.name);
+    m.append(h("div", { class: "item" + (k.active ? " active" : ""), onclick: () => switchKey(k.id) },
+      h("span", { class: "num" }, i < 9 ? String(i + 1) : ""),
+      h("span", { class: "dot" + (k.active ? " live" : "") }),
+      h("div", { class: "meta" },
+        nameEl,
+        h("div", { class: "sub" }, k.hint + (st ? " · " + (st.error ? st.error : [creditText(st), expiryInfo(st.expiresAt)?.text].filter(Boolean).join(" · ")) : " · …"))),
+      h("button", { class: "mini", title: "Show key & details", onclick: (e) => { e.stopPropagation(); closeKeyMenu(); openKeyInfo(k); } }, "ⓘ"),
+      h("button", { class: "mini", title: "Rename", onclick: (e) => { e.stopPropagation(); editingKey = k.id; renderKeyMenu(); m.querySelector(".rename")?.select(); } }, "✎"),
+      h("button", { class: "mini danger" + (armedKey === k.id ? " armed" : ""), title: "Remove this key from the computer", onclick: (e) => { e.stopPropagation(); removeKey(k); } },
+        armedKey === k.id ? "Remove?" : "✕")));
+  });
+  if (S.keys.length) m.append(h("div", { class: "sep" }));
+  m.append(h("div", { class: "item", onclick: () => { closeKeyMenu(); openKeyDialog(); } }, h("span", { class: "num" }), "＋ Add key…"));
+}
+
+function openKeyMenu() {
+  const m = $("keyMenu");
+  m.hidden = false;
+  renderKeyMenu();
+  S.keys.forEach((k) => loadKeyStatus(k.id).then(() => { if (!m.hidden) renderKeyMenu(); }));
+}
+const closeKeyMenu = () => { $("keyMenu").hidden = true; };
+
+async function switchKey(id) {
+  closeKeyMenu();
+  if (activeKey()?.id === id) return;
+  try {
+    setKeys(await go().SetActiveKey(id));
+    toast(`Using key “${activeKey().name}”`);
+    loadKeyStatus(id);
+  } catch (e) { toast(errText(e), true); }
+}
+
+async function commitRename(k, name) {
+  if (editingKey !== k.id) return;
+  editingKey = null;
+  name = name.trim();
+  if (name && name !== k.name) {
+    try { setKeys(await go().RenameKey(k.id, name)); return; } catch (e) { toast(errText(e), true); }
+  }
+  renderKeyMenu();
+}
+
+async function removeKey(k) {
+  if (armedKey !== k.id) {
+    armedKey = k.id;
+    renderKeyMenu();
+    setTimeout(() => { if (armedKey === k.id) { armedKey = null; if (!$("keyMenu").hidden) renderKeyMenu(); } }, 3000);
+    return;
+  }
+  armedKey = null;
+  try {
+    setKeys(await go().RemoveKey(k.id));
+    S.keyStatus.delete(k.id);
+    const a = activeKey();
+    if (a) loadKeyStatus(a.id);
+  } catch (e) { toast(errText(e), true); }
+}
+
+// ---------- key details ----------
+let infoKey = null, revealed = false;
+
+function openKeyInfo(k) {
+  infoKey = k;
+  revealed = false;
+  $("kiTitle").textContent = k.name;
+  $("kiSecret").value = k.hint;
+  $("kiReveal").textContent = "Show";
+  $("kiError").hidden = true;
+  clear($("kiInfo"));
+  $("kiInfo").hidden = true;
+  $("kiMore").textContent = "Show more info";
+  $("dlgKeyInfo").showModal();
+}
+
+async function toggleReveal() {
+  if (revealed) {
+    revealed = false;
+    $("kiSecret").value = infoKey.hint;
+    $("kiReveal").textContent = "Show";
+    return;
+  }
+  try {
+    $("kiSecret").value = await go().RevealKey(infoKey.id);
+    revealed = true;
+    $("kiReveal").textContent = "Hide";
+  } catch (e) { toast(errText(e), true); }
+}
+
+async function copyKey() {
+  try {
+    await navigator.clipboard.writeText(await go().RevealKey(infoKey.id));
+    toast("Key copied to clipboard");
+  } catch (e) { toast(errText(e), true); }
+}
+
+async function loadKeyInfo() {
+  const btn = $("kiMore"), box = $("kiInfo");
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  $("kiError").hidden = true;
+  try {
+    const i = await go().KeyDetails(infoKey.id);
+    clear(box);
+    const row = (k, v, cls) => v != null && v !== "" && box.append(h("dt", {}, k), h("dd", { class: cls || "" }, v));
+    const ex = expiryInfo(i.expires_at);
+    row("OpenRouter label", i.label);
+    row("Expires", i.expires_at ? `${new Date(i.expires_at).toLocaleString()} (${ex.text})` : "Never", ex?.soon ? "warn" : "");
+    row("Credit limit", i.limit != null ? money(i.limit) + (i.limit_reset ? ` / ${i.limit_reset}` : "") : "No limit");
+    if (i.limit_remaining != null) row("Remaining", money(i.limit_remaining));
+    row("Used (all time)", money(i.usage || 0));
+    row("Used today", money(i.usage_daily || 0));
+    row("Used this week", money(i.usage_weekly || 0));
+    row("Used this month", money(i.usage_monthly || 0));
+    if (i.byok_usage) row("BYOK usage", money(i.byok_usage));
+    row("Free tier", i.is_free_tier ? "Yes" : "No");
+    if (i.is_management_key) row("Type", "Management key");
+    if (i.allowed_data_regions?.length) row("Data regions", i.allowed_data_regions.join(", "));
+    box.hidden = false;
+    S.keyStatus.delete(infoKey.id);
+    loadKeyStatus(infoKey.id);
+  } catch (e) {
+    const m = errText(e);
+    $("kiError").textContent = /401|rejected/i.test(m) ? "OpenRouter rejected this key — it may have expired or been revoked." : m;
+    $("kiError").hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Refresh info";
+  }
+}
+
+function openKeyDialog() {
+  $("keyName").value = "";
+  $("keySecret").value = "";
+  $("keySecret").type = "password";
+  $("keyReveal").textContent = "Show";
+  $("keyError").hidden = true;
+  $("dlgKey").showModal();
+  $("keySecret").focus();
+}
+
+async function saveKey(fromEnv) {
+  const btn = $("keySave");
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  $("keyError").hidden = true;
+  try {
+    const res = fromEnv ? await go().AddKeyFromEnv() : await go().AddKey($("keyName").value, $("keySecret").value);
+    setKeys(res.keys);
+    $("dlgKey").close();
+    if (res.warning) toast(res.warning, true);
+    else toast(`Key “${activeKey().name}” added`);
+    loadKeyStatus(activeKey().id);
+  } catch (e) {
+    $("keyError").textContent = errText(e);
+    $("keyError").hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Save key";
+  }
+}
+
+// ---------- model palette ----------
+let cur = 0;
+
+function paletteRows() {
+  const q = $("modelSearch").value.trim().toLowerCase();
+  let list = S.models.filter((m) => !q || `${m.name} ${m.id} ${m.description}`.toLowerCase().includes(q));
+  if (q) return [{ rows: list }];
+  const fav = P().favorites.map((id) => S.byId.get(id)).filter(Boolean);
+  const rec = P().recents.map((id) => S.byId.get(id)).filter((m) => m && !fav.includes(m)).slice(0, 5);
+  const used = new Set([...fav, ...rec]);
+  const rest = list.filter((m) => !used.has(m)).sort((a, b) => b.created - a.created);
+  return [
+    { head: "Favorites", rows: fav }, { head: "Recent", rows: rec }, { head: "All image models", rows: rest },
+  ].filter((g) => g.rows.length);
+}
+
+function renderPalette() {
+  const box = $("modelList");
+  clear(box);
+  const groups = paletteRows(), flat = [];
+  for (const g of groups) {
+    if (g.head) box.append(h("div", { class: "ghead" }, g.head));
+    for (const m of g.rows) { flat.push(m); box.append(modelRow(m, flat.length - 1)); }
+  }
+  if (!flat.length) box.append(h("div", { class: "empty" }, S.models.length ? "No models match." : "No models loaded yet — check your connection."));
+  cur = Math.min(cur, Math.max(0, flat.length - 1));
+  box.dataset.count = flat.length;
+  markCurrent();
+  box._flat = flat;
+}
+
+function modelRow(m, idx) {
+  const sel = P().selected.includes(m.id), fav = P().favorites.includes(m.id);
+  const caps = m.supported_parameters || {};
+  const edit = (caps.input_references?.max || 0) > 0;
+  return h("div", {
+    class: "mrow" + (sel ? " sel" : ""), role: "option", "aria-selected": String(sel), "data-i": idx,
+    onclick: (e) => {
+      if (e.ctrlKey || e.shiftKey || e.metaKey) { toggleModel(m.id); renderPalette(); }
+      else { selectModels([m.id]); $("dlgModels").close(); }
+    },
+  },
+    h("span", { class: "tick", title: "Add to comparison", onclick: (e) => { e.stopPropagation(); toggleModel(m.id); renderPalette(); } }, sel ? "✓" : ""),
+    h("div", { class: "info" }, h("div", { class: "nm" }, m.name), h("div", { class: "id" }, m.id)),
+    h("div", { class: "tags" },
+      edit ? h("span", { class: "tag", title: "Accepts reference images" }, "edit") : null,
+      m.price ? h("span", { class: "tag price", title: "Approximate cost per image. A range means price depends on resolution or quality." }, m.price) : null),
+    h("button", { class: "fav" + (fav ? " on" : ""), title: fav ? "Unpin" : "Pin to top bar", "aria-label": "Favorite",
+      onclick: (e) => { e.stopPropagation(); toggleFav(m.id); renderPalette(); } }, fav ? "★" : "☆"));
+}
+
+function markCurrent() {
+  const box = $("modelList");
+  box.querySelectorAll(".mrow.cur").forEach((e) => e.classList.remove("cur"));
+  const el = box.querySelector(`.mrow[data-i="${cur}"]`);
+  if (el) { el.classList.add("cur"); el.scrollIntoView({ block: "nearest" }); }
+}
+
+function toggleFav(id) {
+  const f = P().favorites;
+  P().favorites = f.includes(id) ? f.filter((x) => x !== id) : [...f, id];
+  savePrefs();
+  renderQuick();
+}
+
+function openPalette() {
+  const d = $("dlgModels");
+  if (d.open) return;
+  $("modelSearch").value = "";
+  cur = 0;
+  renderPalette();
+  d.showModal();
+  $("modelSearch").focus();
+}
+
+// ---------- reference images ----------
+async function fileToRef(file) {
+  const bmp = await createImageBitmap(file);
+  const big = Math.max(bmp.width, bmp.height) > 2048 || file.size > 1.5 * 1024 * 1024;
+  let src;
+  if (big) {
+    const k = Math.min(1, 2048 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(bmp.width * k);
+    c.height = Math.round(bmp.height * k);
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    src = c.toDataURL("image/jpeg", 0.92);
+  } else {
+    src = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+  }
+  bmp.close();
+  return { src, preview: src };
+}
+
+async function addFiles(files) {
+  for (const f of files) {
+    if (!f.type.startsWith("image/")) continue;
+    try { S.refs.push(await fileToRef(f)); } catch { toast(`Couldn't read ${f.name || "image"}`, true); }
+  }
+  renderRefs();
+}
+
+function addGalleryRef(id) {
+  if (S.refs.some((r) => r.src === "gallery:" + id)) return;
+  S.refs.push({ src: "gallery:" + id, preview: "/thumb/" + id });
+  renderRefs();
+  toast("Added as reference image");
+}
+
+function renderRefs() {
+  const box = $("refs");
+  clear(box);
+  if (!S.refs.length) box.append(h("span", { class: "none" }, "Drop, paste or add images to edit or restyle"));
+  S.refs.forEach((r, i) => box.append(h("div", { class: "ref" },
+    h("img", { src: r.preview, alt: "" }),
+    h("button", { type: "button", "aria-label": "Remove reference", onclick: () => { S.refs.splice(i, 1); renderRefs(); } }, "✕"))));
+  const max = Math.max(0, ...selectedModels().map((m) => m.supported_parameters?.input_references?.max || 0));
+  $("promptHint").textContent = S.refs.length && !max ? "selected models ignore references" : "";
+}
+
+// ---------- generation ----------
+async function generate() {
+  const prompt = $("prompt").value.trim();
+  if (!activeKey()) { openKeyDialog(); return; }
+  if (!prompt) { toast("Write a prompt first", true); $("prompt").focus(); return; }
+  if (!P().selected.length) { openPalette(); return; }
+  const models = P().selected.slice();
+  models.forEach(noteRecent);
+  renderQuick();
+  try {
+    const batch = await go().Generate({ prompt, models, params: effectiveParams(), refs: S.refs.map((r) => r.src) });
+    const input = { prompt, params: effectiveParams(), refs: S.refs.map((r) => r.src) };
+    for (const j of batch.jobs) {
+      S.jobs.set(j.id, { ...j, batch: batch.id, state: "queued", started: Date.now(), input });
+      for (const u of S.early.get(j.id) || []) applyJob(u);
+      S.early.delete(j.id);
+    }
+    renderGrid();
+    renderGo();
+  } catch (e) { toast(errText(e), true); }
+}
+
+function applyJob(u) {
+  const j = S.jobs.get(u.id);
+  if (!j) { (S.early.get(u.id) || S.early.set(u.id, []).get(u.id)).push(u); return; }
+  if (u.state === "running" && j.state !== "running") j.started = Date.now();
+  Object.assign(j, { state: u.state, error: u.error, notes: u.notes || j.notes, seconds: u.seconds });
+  if (u.state === "done") {
+    S.jobs.delete(u.id);
+    S.images.unshift(...u.images.slice().reverse());
+    if (u.notes?.length) toast(`${j.modelName}: ${u.notes.join(" · ")}`);
+    refreshActiveStatus();
+  } else if (u.state === "cancelled") {
+    S.jobs.delete(u.id);
+  }
+  renderGrid();
+  renderGo();
+}
+
+function retryJob(j) {
+  S.jobs.delete(j.id);
+  go().Generate({ ...j.input, models: [j.model] }).then((batch) => {
+    for (const nj of batch.jobs) {
+      S.jobs.set(nj.id, { ...nj, batch: batch.id, state: "queued", started: Date.now(), input: j.input });
+      for (const u of S.early.get(nj.id) || []) applyJob(u);
+      S.early.delete(nj.id);
+    }
+    renderGrid();
+  }).catch((e) => toast(errText(e), true));
+  renderGrid();
+}
+
+// ---------- gallery grid ----------
+const els = new Map(); // key -> element
+
+function filteredImages() {
+  const { q, fav, model } = S.filter, needle = q.trim().toLowerCase();
+  return S.images.filter((m) =>
+    (!fav || m.favorite) && (!model || m.model === model) &&
+    (!needle || `${m.prompt} ${m.modelName} ${m.model}`.toLowerCase().includes(needle)));
+}
+
+function jobCard(j) {
+  let el = els.get("job:" + j.id);
+  if (!el) {
+    el = h("div", { class: "card job" });
+    els.set("job:" + j.id, el);
+  }
+  const live = j.pv && j.state === "running";
+  el.className = "card job " + j.state + (j.state === "error" ? " err" : "") + (live ? " live" : "");
+  el.style.setProperty("--r", live && j.pvRatio ? j.pvRatio.toFixed(4) : aspectOf(j.input?.params?.aspectRatio));
+  clear(el);
+  if (live) {
+    el.append(h("img", { class: "pv", src: j.pv, alt: "", draggable: false }),
+      h("div", { class: "pvbar" },
+        h("div", {}, h("b", {}, j.modelName), h("span", { "data-job": j.id, "data-live": "1" }, elapsed(j))),
+        h("button", { class: "btn sm", onclick: () => go().CancelJobs([j.id]) }, "Cancel")));
+    return el;
+  }
+  el.append(h("div", { class: "mname" }, j.modelName));
+  if (j.state === "error") {
+    el.append(h("div", { class: "status", title: j.error }, j.error),
+      h("div", { class: "acts" },
+        h("button", { class: "btn sm", onclick: () => retryJob(j) }, "Retry"),
+        h("button", { class: "btn sm", onclick: () => { S.jobs.delete(j.id); renderGrid(); } }, "Dismiss")));
+  } else {
+    put(el, h("div", { class: "spin" }),
+      h("div", { class: "status", "data-job": j.id }, j.state === "queued" ? "Queued…" : elapsed(j)),
+      j.notes?.length ? h("div", { class: "status", title: j.notes.join("\n") }, "⚠ " + j.notes[0]) : null,
+      h("button", { class: "btn sm", onclick: () => go().CancelJobs([j.id]) }, "Cancel"));
+  }
+  return el;
+}
+
+const elapsed = (j) => `${j.pv ? "Streaming" : "Generating"}… ${fmtSecs((Date.now() - j.started) / 1000)}`;
+
+function aspectOf(ar) {
+  if (!ar) return 1;
+  const r = ratioVal(ar);
+  return Math.min(3, Math.max(0.4, r || 1));
+}
+
+function imageCard(m) {
+  const key = "img:" + m.id;
+  let el = els.get(key);
+  if (!el) {
+    el = h("div", { class: "card", tabindex: 0, role: "button", "aria-label": m.prompt, onclick: () => openViewer(m.id),
+      onkeydown: (e) => { if (e.key === "Enter") openViewer(m.id); } },
+      h("img", { src: "/thumb/" + m.id, loading: "lazy", decoding: "async", alt: m.prompt, draggable: false }),
+      h("div", { class: "shade" }, h("b", {}, m.modelName), h("i", {}, (m.seconds ? fmtSecs(m.seconds) + " · " : "") + m.prompt)),
+      h("button", { class: "star", "aria-label": "Favorite", onclick: (e) => { e.stopPropagation(); toggleImageFav(m.id); } }, "★"));
+    els.set(key, el);
+  }
+  const r = m.width && m.height ? m.width / m.height : 1;
+  el.style.setProperty("--r", Math.min(3, Math.max(0.4, r)).toFixed(4));
+  el.querySelector(".star").className = "star" + (m.favorite ? " on" : "");
+  return el;
+}
+
+function renderGrid() {
+  const grid = $("grid"), want = [];
+  const jobs = [...S.jobs.values()].reverse();
+  for (const j of jobs) want.push(jobCard(j));
+  const imgs = filteredImages();
+  for (const m of imgs) want.push(imageCard(m));
+  // reconcile in place so existing <img> elements (and scroll position) survive
+  want.forEach((el, i) => { if (grid.children[i] !== el) grid.insertBefore(el, grid.children[i] || null); });
+  while (grid.children.length > want.length) grid.lastElementChild.remove();
+  const live = new Set(want);
+  for (const [k, el] of els) if (!live.has(el)) els.delete(k);
+
+  $("count").textContent = imgs.length === S.images.length ? `${imgs.length} images` : `${imgs.length} of ${S.images.length}`;
+  renderEmpty();
+  refreshModelFilter();
+}
+
+function renderEmpty() {
+  const e = $("empty");
+  const noKey = !S.keys.length, none = !S.images.length && !S.jobs.size;
+  e.hidden = !(noKey || none || (!filteredImages().length && !S.jobs.size));
+  if (e.hidden) return;
+  clear(e);
+  if (noKey) {
+    e.append(h("div", { class: "penny" }), h("h2", {}, "Welcome to Pennyframe"),
+      h("p", {}, "Add an OpenRouter API key to start generating. You can add several and switch between them with Alt+1…9."),
+      h("button", { class: "btn primary big", onclick: openKeyDialog }, "Add API key"));
+  } else if (none) {
+    e.append(h("div", { class: "penny" }), h("h2", {}, "Nothing here yet"),
+      h("p", {}, "Pick a model, write a prompt and press Ctrl+Enter. Select several models to compare them side by side."));
+  } else {
+    e.append(h("p", {}, "No images match your filters."));
+  }
+}
+
+function refreshModelFilter() {
+  const sel = $("modelFilter"), seen = new Map();
+  for (const m of S.images) seen.set(m.model, m.modelName);
+  const sig = [...seen.keys()].sort().join("|") + "#" + S.filter.model;
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+  clear(sel);
+  sel.append(h("option", { value: "" }, "All models"));
+  for (const [id, name] of [...seen].sort((a, b) => a[1].localeCompare(b[1]))) sel.append(h("option", { value: id }, name));
+  sel.value = S.filter.model;
+}
+
+async function toggleImageFav(id) {
+  const m = S.images.find((x) => x.id === id);
+  if (!m) return;
+  m.favorite = !m.favorite;
+  try { await go().SetFavorite(id, m.favorite); } catch (e) { m.favorite = !m.favorite; toast(errText(e), true); }
+  renderGrid();
+  if ($("dlgView").open) renderViewer();
+}
+
+// ---------- viewer ----------
+let viewId = null;
+
+function openViewer(id) {
+  viewId = id;
+  renderViewer();
+  if (!$("dlgView").open) $("dlgView").showModal();
+}
+
+function viewList() { return filteredImages(); }
+
+function stepViewer(d) {
+  const list = viewList(), i = list.findIndex((m) => m.id === viewId);
+  if (i < 0) return;
+  const n = list[i + d];
+  if (n) { viewId = n.id; renderViewer(); }
+}
+
+const PARAM_LABELS = { aspect_ratio: "Aspect", resolution: "Resolution", quality: "Quality", output_format: "Format", background: "Background", n: "Images", seed: "Seed", output_compression: "Compression" };
+
+function renderViewer() {
+  const m = S.images.find((x) => x.id === viewId);
+  if (!m) { $("dlgView").close(); return; }
+  $("lbImg").src = "/img/" + m.id;
+  $("lbImg").alt = m.prompt;
+  const list = viewList(), i = list.findIndex((x) => x.id === m.id);
+  $("lbPrev").hidden = i <= 0;
+  $("lbNext").hidden = i < 0 || i >= list.length - 1;
+
+  const kv = [];
+  const add = (k, v) => v != null && v !== "" && kv.push(h("dt", {}, k), h("dd", {}, v));
+  add("Model", m.model);
+  add("Size", m.width ? `${m.width} × ${m.height}` : null);
+  add("File", fmtBytes(m.bytes));
+  add("Generation time", m.seconds ? fmtSecs(m.seconds) : null);
+  add("Cost", m.cost != null ? money(m.cost) : "not reported");
+  if (m.costCount > 1 && m.costTotal != null) add("Request total", `${money(m.costTotal)} for ${m.costCount} images`);
+  add("Key", m.keyName);
+  add("References", m.refs || null);
+  for (const [k, v] of Object.entries(m.params || {})) add(PARAM_LABELS[k] || k, String(v));
+  add("Created", new Date(m.createdAt).toLocaleString());
+
+  const side = $("lbSide");
+  clear(side);
+  side.append(
+    h("h3", {}, m.modelName),
+    h("div", { class: "stats" },
+      m.seconds ? h("span", { class: "stat" }, h("b", {}, fmtSecs(m.seconds)), "to generate") : null,
+      h("span", { class: "stat", title: m.cost == null ? "OpenRouter didn't report a cost for this request" : "Billed by OpenRouter, split evenly across the images in the request" },
+        h("b", {}, m.cost != null ? money(m.cost) : "—"), m.costCount > 1 ? "per image" : "cost"),
+      m.width ? h("span", { class: "stat" }, h("b", {}, `${m.width}×${m.height}`), "pixels") : null),
+    h("div", { class: "prompt" }, m.prompt),
+    h("dl", { class: "kv" }, kv),
+    h("div", { class: "lb-actions" },
+      h("button", { class: "btn", onclick: () => reuse(m) }, "Reuse settings"),
+      h("button", { class: "btn", onclick: () => { addGalleryRef(m.id); } }, "Use as reference"),
+      h("button", { class: "btn", onclick: () => toggleImageFav(m.id) }, m.favorite ? "★ Favorited" : "☆ Favorite"),
+      h("button", { class: "btn", onclick: () => copyImage(m.id) }, "Copy image"),
+      h("button", { class: "btn", onclick: () => navigator.clipboard.writeText(m.prompt).then(() => toast("Prompt copied")) }, "Copy prompt"),
+      h("button", { class: "btn", onclick: () => saveAs(m.id) }, "Save as…"),
+      h("button", { class: "btn", onclick: () => go().RevealImage(m.id) }, "Show in folder"),
+      deleteButton(m.id)));
+}
+
+function deleteButton(id) {
+  let armed = false, timer;
+  const b = h("button", { class: "btn danger", onclick: async () => {
+    if (!armed) { armed = true; b.textContent = "Click again to delete"; timer = setTimeout(() => { armed = false; b.textContent = "Delete"; }, 3000); return; }
+    clearTimeout(timer);
+    try {
+      await go().DeleteImages([id]);
+      const list = viewList(), i = list.findIndex((x) => x.id === id);
+      const next = list[i + 1] || list[i - 1];
+      S.images = S.images.filter((x) => x.id !== id);
+      renderGrid();
+      if (next) { viewId = next.id; renderViewer(); } else $("dlgView").close();
+    } catch (e) { toast(errText(e), true); }
+  } }, "Delete");
+  return b;
+}
+
+function reuse(m) {
+  $("prompt").value = m.prompt;
+  P().prompt = m.prompt;
+  if (S.byId.has(m.model)) selectModels([m.model]);
+  const map = { aspect_ratio: "aspectRatio", resolution: "resolution", quality: "quality", output_format: "outputFormat", background: "background", n: "n", seed: "seed", output_compression: "compression" };
+  P().params = {};
+  for (const [k, v] of Object.entries(m.params || {})) if (map[k]) P().params[map[k]] = v;
+  savePrefs();
+  renderParams();
+  $("dlgView").close();
+  toast("Settings loaded");
+  $("prompt").focus();
+}
+
+async function copyImage(id) {
+  try {
+    const img = new Image();
+    img.src = "/img/" + id;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext("2d").drawImage(img, 0, 0);
+    const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    toast("Image copied");
+  } catch (e) { toast("Couldn't copy image: " + errText(e), true); }
+}
+
+async function saveAs(id) {
+  try {
+    const p = await go().SaveImageAs(id);
+    if (p) toast("Saved to " + p);
+  } catch (e) { toast(errText(e), true); }
+}
+
+// ---------- settings ----------
+function openSettings() {
+  $("outDir").textContent = S.outputDir;
+  $("modelStats").textContent = `${S.models.length} image models cached`;
+  go().Version().then((v) => { $("appVersion").textContent = "Pennyframe " + v; });
+  $("dlgSettings").showModal();
+}
+
+async function refreshModels(force) {
+  try {
+    setModels(await go().RefreshModels(force));
+    afterModelsChanged();
+    if (force) toast(`${S.models.length} models loaded`);
+  } catch (e) { toast(errText(e), true); }
+}
+
+function afterModelsChanged() {
+  // Drop selections that no longer exist; seed a first-run default.
+  if (S.models.length) {
+    P().selected = P().selected.filter((id) => S.byId.has(id));
+    if (!P().selected.length) P().selected = [S.models[0].id];
+  }
+  renderSelection();
+  renderRefs();
+  if ($("dlgModels").open) renderPalette();
+}
+
+// ---------- wiring ----------
+function wire() {
+  $("btnModels").onclick = $("btnPick").onclick = openPalette;
+  $("modelsDone").onclick = () => $("dlgModels").close();
+  $("modelSearch").addEventListener("input", () => { cur = 0; renderPalette(); });
+  $("modelSearch").addEventListener("keydown", (e) => {
+    const flat = $("modelList")._flat || [];
+    if (e.key === "ArrowDown") { cur = Math.min(flat.length - 1, cur + 1); markCurrent(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { cur = Math.max(0, cur - 1); markCurrent(); e.preventDefault(); }
+    else if (e.key === "Enter" && flat[cur]) {
+      e.preventDefault();
+      if (e.ctrlKey || e.shiftKey) { toggleModel(flat[cur].id); renderPalette(); }
+      else { selectModels([flat[cur].id]); $("dlgModels").close(); }
+    }
+  });
+  $("dlgModels").addEventListener("click", (e) => { if (e.target === $("dlgModels")) $("dlgModels").close(); });
+
+  $("btnKey").onclick = (e) => { e.stopPropagation(); $("keyMenu").hidden ? (S.keys.length ? openKeyMenu() : openKeyDialog()) : closeKeyMenu(); };
+  document.addEventListener("click", (e) => { if (!e.target.closest(".keyswitch")) closeKeyMenu(); });
+  $("keyForm").addEventListener("submit", (e) => { e.preventDefault(); saveKey(false); });
+  $("keyCancel").onclick = () => $("dlgKey").close();
+  $("keyReveal").onclick = () => {
+    const i = $("keySecret"), show = i.type === "password";
+    i.type = show ? "text" : "password";
+    $("keyReveal").textContent = show ? "Hide" : "Show";
+  };
+  $("keyEnv").onclick = () => saveKey(true);
+  $("kiReveal").onclick = toggleReveal;
+  $("kiCopy").onclick = copyKey;
+  $("kiMore").onclick = loadKeyInfo;
+  $("kiClose").onclick = () => $("dlgKeyInfo").close();
+  $("dlgKeyInfo").addEventListener("close", () => { revealed = false; $("kiSecret").value = ""; }); // don't leave the secret in the DOM
+  $("linkKeys").onclick = (e) => { e.preventDefault(); rt().BrowserOpenURL("https://openrouter.ai/keys"); };
+
+  $("btnAddKey").onclick = openKeyDialog;
+  $("btnSettings").onclick = openSettings;
+  $("settingsClose").onclick = () => $("dlgSettings").close();
+  $("outOpen").onclick = () => go().OpenOutputDir();
+  $("outChange").onclick = async () => {
+    try {
+      const b = await go().ChooseOutputDir();
+      if (!b) return;
+      S.images = b.images || [];
+      S.outputDir = b.outputDir;
+      $("outDir").textContent = S.outputDir;
+      renderGrid();
+    } catch (e) { toast(errText(e), true); }
+  };
+  $("modelsRefresh").onclick = async () => { await refreshModels(true); $("modelStats").textContent = `${S.models.length} image models cached`; };
+
+  $("go").onclick = generate;
+  $("prompt").addEventListener("input", (e) => { P().prompt = e.target.value; savePrefs(); });
+  $("prompt").addEventListener("paste", (e) => {
+    const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  });
+  $("btnAddRef").onclick = () => $("refFile").click();
+  $("refFile").onchange = async (e) => { await addFiles(e.target.files); e.target.value = ""; };
+
+  const compose = $("compose");
+  ["dragenter", "dragover"].forEach((t) => compose.addEventListener(t, (e) => { if (e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); $("refs").classList.add("drop"); } }));
+  ["dragleave", "drop"].forEach((t) => compose.addEventListener(t, () => $("refs").classList.remove("drop")));
+  compose.addEventListener("drop", (e) => { e.preventDefault(); addFiles(e.dataTransfer.files); });
+
+  $("search").addEventListener("input", debounce((e) => { S.filter.q = e.target.value; renderGrid(); }, 120));
+  $("modelFilter").onchange = (e) => { S.filter.model = e.target.value; renderGrid(); };
+  $("favOnly").onclick = (e) => {
+    S.filter.fav = !S.filter.fav;
+    e.currentTarget.setAttribute("aria-pressed", S.filter.fav);
+    renderGrid();
+  };
+  $("thumbSize").addEventListener("input", (e) => {
+    document.documentElement.style.setProperty("--thumb", e.target.value + "px");
+    P().thumb = +e.target.value;
+    savePrefs();
+  });
+
+  $("lbClose").onclick = () => $("dlgView").close();
+  $("lbPrev").onclick = () => stepViewer(-1);
+  $("lbNext").onclick = () => stepViewer(1);
+  $("lbStage").addEventListener("click", (e) => { if (e.target === $("lbStage")) $("dlgView").close(); });
+
+  document.addEventListener("keydown", (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.shiftKey && e.key.toLowerCase() === "k") { e.preventDefault(); $("dlgModels").open ? $("dlgModels").close() : openPalette(); return; }
+    if (mod && e.key === "Enter" && !document.querySelector("dialog[open]")) { e.preventDefault(); generate(); return; }
+    if (mod && e.shiftKey && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      S.keys.length ? ($("keyMenu").hidden ? openKeyMenu() : closeKeyMenu()) : openKeyDialog();
+      return;
+    }
+    if (e.altKey && /^[1-9]$/.test(e.key)) {
+      const k = S.keys[+e.key - 1];
+      if (k) { e.preventDefault(); switchKey(k.id); }
+      return;
+    }
+    if ($("dlgView").open && !/input|textarea/i.test(e.target.tagName)) {
+      if (e.key === "ArrowLeft") stepViewer(-1);
+      else if (e.key === "ArrowRight") stepViewer(1);
+      else if (e.key.toLowerCase() === "f") toggleImageFav(viewId);
+    }
+    if (e.key === "Escape") closeKeyMenu();
+  });
+
+  // live elapsed timers on running job cards
+  setInterval(() => {
+    for (const j of S.jobs.values()) {
+      if (j.state !== "running") continue;
+      const n = document.querySelector(`[data-job="${j.id}"]`);
+      if (n) n.textContent = elapsed(j);
+    }
+  }, 500);
+}
+
+// ---------- boot ----------
+async function main() {
+  while (!window.go?.main?.App) await new Promise((r) => setTimeout(r, 20)); // bindings arrive just after load
+  wire();
+  const b = await go().Bootstrap();
+  try { Object.assign(S.prefs, JSON.parse(b.prefs || "{}")); } catch { /* fresh prefs */ }
+  P().params ||= {};
+  setModels(b.models);
+  S.images = b.images || [];
+  S.outputDir = b.outputDir;
+  $("prompt").value = P().prompt || "";
+  $("thumbSize").value = P().thumb || 220;
+  document.documentElement.style.setProperty("--thumb", $("thumbSize").value + "px");
+  $("keyEnv").hidden = !b.envKey;
+  setKeys(b.keys);
+  afterModelsChanged();
+  renderGrid();
+  if (!S.keys.length) {
+    setTimeout(() => { if (!S.keys.length) openKeyDialog(); }, 250);
+  } else {
+    loadKeyStatus(activeKey().id);
+  }
+
+  rt().EventsOn("job", applyJob);
+  rt().EventsOn("job:preview", ({ id, n }) => {
+    const j = S.jobs.get(id);
+    if (!j) return;
+    // Preload so the card swaps images without a blank flash.
+    const url = `/preview/${id}?n=${n}`, img = new Image();
+    img.src = url;
+    img.decode().then(() => {
+      if (!S.jobs.has(id) || (j.pvN || 0) > n) return;
+      j.pv = url; j.pvN = n; j.pvRatio = Math.min(3, Math.max(0.4, img.naturalWidth / img.naturalHeight));
+      renderGrid();
+    }).catch(() => {});
+  });
+  rt().EventsOn("model:price", ({ id, price }) => {
+    const m = S.byId.get(id);
+    if (!m) return;
+    m.price = price;
+    if ($("dlgModels").open) renderPalette();
+  });
+  refreshModels(false);
+}
+
+main().catch((e) => { document.body.prepend(h("pre", { style: "color:#f07178;padding:20px" }, "Startup failed: " + errText(e))); });
