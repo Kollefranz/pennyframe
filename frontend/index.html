@@ -67,25 +67,54 @@
 </dialog>
 
 <dialog id="dlgKey" class="modal">
-  <form method="dialog" id="keyForm" class="form">
-    <h2>Add OpenRouter API key</h2>
-    <label>Name <span class="hint">(optional)</span>
-      <input type="text" id="keyName" placeholder="Personal, Work, Free tier…" autocomplete="off">
-    </label>
-    <label>API key
-      <div class="row">
-        <input type="password" id="keySecret" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false">
-        <button type="button" class="btn" id="keyReveal">Show</button>
-      </div>
-    </label>
-    <p class="hint">Stored in your OS credential vault, never in a file. Get one at <a href="#" id="linkKeys">openrouter.ai/keys</a>.</p>
-    <p class="error" id="keyError" hidden></p>
-    <div class="row end">
-      <button type="button" class="btn" id="keyEnv" hidden>Use OPENROUTER_API_KEY</button>
-      <button type="button" class="btn" id="keyCancel">Cancel</button>
-      <button type="submit" class="btn primary" id="keySave">Save key</button>
+  <div class="form">
+    <h2>Connect to OpenRouter</h2>
+
+    <div id="connectPane" class="stack">
+      <p class="lead">Pennyframe makes images through OpenRouter. Connecting takes about a minute:</p>
+      <ol class="steps">
+        <li>Click the button below. OpenRouter opens in your browser.</li>
+        <li>Sign in, or create a free account.</li>
+        <li>Click <b>Authorize</b>, then come back here.</li>
+      </ol>
+      <button type="button" class="btn primary big" id="btnConnect">Connect with OpenRouter</button>
+      <p class="hint">Your password never reaches Pennyframe. Images are billed by OpenRouter, so you'll need a little credit on your account: <a href="#" id="linkCredits">add credit</a>.</p>
     </div>
-  </form>
+
+    <div id="waitPane" class="stack waiting" hidden>
+      <div class="spin"></div>
+      <p class="lead">Waiting for OpenRouter…</p>
+      <p class="hint">Finish in the browser tab that just opened: sign in, then click <b>Authorize</b>. This window updates by itself.</p>
+      <div class="row">
+        <button type="button" class="btn" id="btnReopen">Open the page again</button>
+        <button type="button" class="btn" id="btnConnectCancel">Cancel</button>
+      </div>
+    </div>
+
+    <p class="error" id="keyError" hidden></p>
+
+    <details id="manual">
+      <summary>I already have an API key</summary>
+      <form method="dialog" id="keyForm" class="stack">
+        <label>Name <span class="hint">(optional)</span>
+          <input type="text" id="keyName" placeholder="Personal, Work, Free tier…" autocomplete="off">
+        </label>
+        <label>API key
+          <div class="row">
+            <input type="password" id="keySecret" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false">
+            <button type="button" class="btn" id="keyReveal">Show</button>
+          </div>
+        </label>
+        <p class="hint">Stored in your OS credential vault, never in a file.</p>
+        <div class="row end">
+          <button type="button" class="btn" id="keyEnv" hidden>Use OPENROUTER_API_KEY</button>
+          <button type="submit" class="btn primary" id="keySave">Save key</button>
+        </div>
+      </form>
+    </details>
+
+    <div class="row end"><button type="button" class="btn" id="keyCancel">Close</button></div>
+  </div>
 </dialog>
 
 <dialog id="dlgKeyInfo" class="modal">

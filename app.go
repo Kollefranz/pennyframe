@@ -42,7 +42,11 @@ type App struct {
 	priced  time.Time
 	jobs    map[string]context.CancelFunc
 	preview map[string][]byte // latest partial render per running job
-	sem     chan struct{}
+
+	connectCancel context.CancelFunc
+	authURL       string
+	openURL       func(string) error // opens a URL in the user's browser
+	sem           chan struct{}
 }
 
 func NewApp(cfg *store.Config, gal *store.Gallery) *App {
@@ -53,6 +57,13 @@ func NewApp(cfg *store.Config, gal *store.Gallery) *App {
 		jobs:    map[string]context.CancelFunc{},
 		preview: map[string][]byte{},
 		sem:     make(chan struct{}, maxParallelJobs),
+	}
+	a.openURL = func(u string) error {
+		if a.ctx == nil {
+			return errors.New("no window to open a browser from")
+		}
+		wruntime.BrowserOpenURL(a.ctx, u)
+		return nil
 	}
 	a.emit = func(event string, data any) {
 		if a.ctx != nil {
@@ -199,6 +210,70 @@ func (a *App) defaultKeyName(info *openrouter.KeyInfo) string {
 		return info.Label
 	}
 	return fmt.Sprintf("Key %d", len(a.cfg.Keys())+1)
+}
+
+// ConnectOpenRouter signs the user in through OpenRouter's OAuth flow in their browser and stores the key it creates.
+// It blocks until the user finishes, cancels, or 10 minutes pass.
+func (a *App) ConnectOpenRouter() (AddKeyResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	a.mu.Lock()
+	if a.connectCancel != nil {
+		a.connectCancel() // a newer attempt replaces an older one
+	}
+	a.connectCancel = cancel
+	a.mu.Unlock()
+	defer cancel()
+
+	secret, err := a.or.Authorize(ctx, openrouter.AuthOptions{
+		Label: "Pennyframe",
+		Open: func(u string) error {
+			a.mu.Lock()
+			a.authURL = u
+			a.mu.Unlock()
+			return a.openURL(u)
+		},
+	})
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, openrouter.ErrAuthDenied):
+		return AddKeyResult{}, errors.New("cancelled")
+	case errors.Is(err, context.DeadlineExceeded):
+		return AddKeyResult{}, errors.New("That took too long — click Connect to try again.")
+	case err != nil:
+		return AddKeyResult{}, err
+	}
+	return a.AddKey(a.uniqueKeyName("OpenRouter"), secret)
+}
+
+// CancelConnect abandons a pending ConnectOpenRouter.
+func (a *App) CancelConnect() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.connectCancel != nil {
+		a.connectCancel()
+	}
+}
+
+// ReopenConnect shows the OpenRouter sign-in page again (e.g. the user closed the tab).
+func (a *App) ReopenConnect() error {
+	a.mu.Lock()
+	u := a.authURL
+	a.mu.Unlock()
+	if u == "" {
+		return errors.New("no connection in progress")
+	}
+	return a.openURL(u)
+}
+
+func (a *App) uniqueKeyName(base string) string {
+	taken := map[string]bool{}
+	for _, k := range a.cfg.Keys() {
+		taken[k.Name] = true
+	}
+	name := base
+	for i := 2; taken[name]; i++ {
+		name = fmt.Sprintf("%s %d", base, i)
+	}
+	return name
 }
 
 func (a *App) AddKeyFromEnv() (AddKeyResult, error) {

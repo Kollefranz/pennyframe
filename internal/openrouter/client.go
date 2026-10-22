@@ -19,6 +19,8 @@ const DefaultBaseURL = "https://openrouter.ai/api/v1"
 
 type Client struct {
 	BaseURL string
+	// AuthURL is the sign-in page for OAuth; empty means OpenRouter's.
+	AuthURL string
 	HTTP    *http.Client
 }
 
@@ -30,6 +32,7 @@ func New() *Client {
 	}
 	return &Client{
 		BaseURL: base,
+		AuthURL: os.Getenv("OPENROUTER_AUTH_URL"),
 		// No overall timeout: big images can take minutes. Callers use ctx.
 		HTTP: &http.Client{Transport: &http.Transport{
 			Proxy:               http.ProxyFromEnvironment,
@@ -52,7 +55,7 @@ func (e *APIError) Error() string {
 	case http.StatusUnauthorized:
 		return "OpenRouter rejected the API key (401)"
 	case http.StatusPaymentRequired:
-		return "Insufficient OpenRouter credits (402): " + e.Message
+		return "OpenRouter says this account is out of credits. Add some at https://openrouter.ai/settings/credits and try again."
 	case http.StatusTooManyRequests:
 		return "Rate limited by OpenRouter (429): " + e.Message
 	}

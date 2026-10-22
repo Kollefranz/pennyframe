@@ -49,6 +49,7 @@ func main() {
 	}
 	app := NewApp(cfg, gal)
 
+	app.openURL = func(u string) error { log.Println("OPEN_URL", u); return nil } // no browser in the harness
 	var mu sync.Mutex
 	subs := map[chan string]bool{}
 	app.emit = func(ev string, data any) {

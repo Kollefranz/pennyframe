@@ -16,7 +16,7 @@ That puts Pennyframe in the Start Menu and on the desktop. Update with `scoop up
 ## Use it
 
 1. Run `build/bin/pennyframe.exe`.
-2. Add an API key (kept in the OS credential vault — Windows Credential Manager — never in a file). Add as many as you like.
+2. Click **Connect with OpenRouter**. Your browser opens on OpenRouter where you sign in (or create an account) and click Authorize; Pennyframe receives a key for your account (OpenRouter's OAuth PKCE flow with a one-time localhost callback — Pennyframe never sees your password). Already have a key? Use "I already have an API key". Keys are kept in the OS credential vault (Windows Credential Manager), never in a file, and you can add as many as you like.
 3. Pick a model, write a prompt, **Ctrl+Enter**.
 
 | Shortcut | Action |
@@ -55,7 +55,7 @@ The `release` workflow builds the exe, publishes `pennyframe-<version>-windows-a
 
 ## Development
 
-- `OPENROUTER_BASE_URL` points the client at another endpoint (proxy, mock).
+- `OPENROUTER_BASE_URL` / `OPENROUTER_AUTH_URL` point the client at another API / sign-in page (proxy, mock).
 - `PENNYFRAME_DATA_DIR` uses an isolated profile (config, thumbs, `images/`).
 - `go run -tags devserver .` serves the UI at http://127.0.0.1:8800 over a small RPC bridge so it can be driven in a normal browser (requires `PENNYFRAME_DATA_DIR`). File dialogs are not available there.
 

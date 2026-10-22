@@ -232,7 +232,7 @@ function renderGo() {
 function renderKeyButton() {
   const k = activeKey(), btn = $("btnKey");
   clear(btn);
-  if (!k) { btn.append(h("span", { class: "dot" }), "Add API key"); return; }
+  if (!k) { btn.append(h("span", { class: "dot" }), "Connect OpenRouter"); return; }
   const st = S.keyStatus.get(k.id);
   const ex = expiryInfo(st?.expiresAt);
   put(btn, h("span", { class: "dot live" }), k.name, h("span", { class: "credit" }, creditText(st)),
@@ -418,14 +418,47 @@ async function loadKeyInfo() {
   }
 }
 
+// ---------- connect (OAuth) ----------
+let connecting = false;
+
+function showConnectPane(waiting) {
+  $("connectPane").hidden = waiting;
+  $("waitPane").hidden = !waiting;
+}
+
+async function startConnect() {
+  if (!$("dlgKey").open) openKeyDialog();
+  $("keyError").hidden = true;
+  connecting = true;
+  showConnectPane(true);
+  try {
+    const res = await go().ConnectOpenRouter();
+    setKeys(res.keys);
+    if ($("dlgKey").open) $("dlgKey").close();
+    toast(`Connected! If an image fails with a credits message, add some at openrouter.ai/settings/credits`);
+    loadKeyStatus(activeKey().id);
+  } catch (e) {
+    const m = errText(e);
+    if (m !== "cancelled") {
+      $("keyError").textContent = m;
+      $("keyError").hidden = false;
+    }
+  } finally {
+    connecting = false;
+    showConnectPane(false);
+  }
+}
+
 function openKeyDialog() {
+  showConnectPane(connecting);
+  $("manual").open = false;
   $("keyName").value = "";
   $("keySecret").value = "";
   $("keySecret").type = "password";
   $("keyReveal").textContent = "Show";
   $("keyError").hidden = true;
   $("dlgKey").showModal();
-  $("keySecret").focus();
+  $("btnConnect").focus();
 }
 
 async function saveKey(fromEnv) {
@@ -713,8 +746,8 @@ function renderEmpty() {
   clear(e);
   if (noKey) {
     e.append(h("div", { class: "penny" }), h("h2", {}, "Welcome to Pennyframe"),
-      h("p", {}, "Add an OpenRouter API key to start generating. You can add several and switch between them with Alt+1…9."),
-      h("button", { class: "btn primary big", onclick: openKeyDialog }, "Add API key"));
+      h("p", {}, "Connect your OpenRouter account to start making images — one click, and OpenRouter walks you through signing in. You can connect several keys and switch between them with Alt+1…9."),
+      h("button", { class: "btn primary big", onclick: startConnect }, "Connect with OpenRouter"));
   } else if (none) {
     e.append(h("div", { class: "penny" }), h("h2", {}, "Nothing here yet"),
       h("p", {}, "Pick a model, write a prompt and press Ctrl+Enter. Select several models to compare them side by side."));
@@ -908,6 +941,11 @@ function wire() {
   document.addEventListener("click", (e) => { if (!e.target.closest(".keyswitch")) closeKeyMenu(); });
   $("keyForm").addEventListener("submit", (e) => { e.preventDefault(); saveKey(false); });
   $("keyCancel").onclick = () => $("dlgKey").close();
+  $("btnConnect").onclick = startConnect;
+  $("btnConnectCancel").onclick = () => go().CancelConnect();
+  $("btnReopen").onclick = () => go().ReopenConnect().catch((e) => toast(errText(e), true));
+  $("dlgKey").addEventListener("close", () => { if (connecting) go().CancelConnect(); });
+  $("linkCredits").onclick = (e) => { e.preventDefault(); rt().BrowserOpenURL("https://openrouter.ai/settings/credits"); };
   $("keyReveal").onclick = () => {
     const i = $("keySecret"), show = i.type === "password";
     i.type = show ? "text" : "password";
@@ -919,7 +957,7 @@ function wire() {
   $("kiMore").onclick = loadKeyInfo;
   $("kiClose").onclick = () => $("dlgKeyInfo").close();
   $("dlgKeyInfo").addEventListener("close", () => { revealed = false; $("kiSecret").value = ""; }); // don't leave the secret in the DOM
-  $("linkKeys").onclick = (e) => { e.preventDefault(); rt().BrowserOpenURL("https://openrouter.ai/keys"); };
+  
 
   $("btnAddKey").onclick = openKeyDialog;
   $("btnSettings").onclick = openSettings;

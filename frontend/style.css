@@ -175,6 +175,16 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
 #kiSecret { font: 12px ui-monospace, Consolas, monospace; }
 #kiInfo { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0; }
 /* ring spinner: a soft comet arc on a faint track, eased so it breathes instead of whirring */
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.lead { margin: 0; font-size: 15px; }
+.steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; color: var(--dim); }
+.steps li::marker { color: var(--accent); font-weight: 650; }
+.waiting { align-items: center; text-align: center; padding: 8px 0; }
+.waiting .hint { max-width: 320px; }
+details#manual { border-top: 1px solid var(--line); padding-top: 12px; }
+details#manual summary { cursor: pointer; color: var(--dim); font-size: 13px; }
+details#manual summary:hover { color: var(--text); }
+details#manual form { margin-top: 12px; }
 .spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--line); position: relative; animation: spin 2.2s cubic-bezier(.5, .1, .5, .9) infinite; }
 .spin::before { content: ""; position: absolute; inset: -3px; border-radius: 50%; padding: 3px; background: conic-gradient(from 0deg, transparent 0 25%, var(--accent) 88%, transparent 88.5% 100%); -webkit-mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); }
 .card.job.queued .spin { animation-duration: 4s; opacity: .55; }
