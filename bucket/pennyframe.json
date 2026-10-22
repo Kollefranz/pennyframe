@@ -1,0 +1,37 @@
+{
+    "version": "0.1.0",
+    "description": "Fast desktop app for generating, saving and browsing images with OpenRouter image models",
+    "homepage": "https://github.com/Kollefranz/pennyframe",
+    "url": "https://github.com/Kollefranz/pennyframe/releases/download/v0.1.0/pennyframe-0.1.0-windows-amd64.zip",
+    "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "bin": "pennyframe.exe",
+    "shortcuts": [
+        [
+            "pennyframe.exe",
+            "Pennyframe"
+        ]
+    ],
+    "pre_install": "Get-Process pennyframe -ErrorAction SilentlyContinue | Stop-Process",
+    "post_install": [
+        "# Scoop only makes a Start Menu entry; add the desktop shortcut too.",
+        "$app = if ((Split-Path $dir -Leaf) -eq 'current') { $dir } else { Join-Path (Split-Path $dir -Parent) 'current' }",
+        "if (-not (Test-Path $app)) { $app = $dir }",
+        "$lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Pennyframe.lnk'))",
+        "$lnk.TargetPath = Join-Path $app 'pennyframe.exe'",
+        "$lnk.WorkingDirectory = $app",
+        "$lnk.Description = 'Pennyframe'",
+        "$lnk.Save()"
+    ],
+    "pre_uninstall": [
+        "Get-Process pennyframe -ErrorAction SilentlyContinue | Stop-Process",
+        "Remove-Item (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Pennyframe.lnk') -ErrorAction SilentlyContinue"
+    ],
+    "checkver": "github",
+    "autoupdate": {
+        "url": "https://github.com/Kollefranz/pennyframe/releases/download/v$version/pennyframe-$version-windows-amd64.zip",
+        "hash": {
+            "url": "$url.sha256"
+        }
+    },
+    "notes": "Needs the Microsoft Edge WebView2 runtime (built into Windows 11). Images and settings live outside the Scoop folder, so updating or uninstalling keeps them."
+}
