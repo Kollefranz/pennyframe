@@ -202,7 +202,7 @@ function renderChips() {
   const box = $("selected");
   clear(box);
   const sel = selectedModels();
-  if (!sel.length) box.append(h("span", { class: "none" }, "No model chosen — press Ctrl+K"));
+  if (!sel.length) box.append(h("span", { class: "none" }, macText("No model chosen — press Ctrl+K")));
   for (const m of sel) {
     box.append(h("span", { class: "chip", title: m.id },
       h("span", {}, shortName(m)),
@@ -218,7 +218,7 @@ function renderQuick() {
   for (const id of ids) {
     const m = S.byId.get(id), on = P().selected.includes(id);
     box.append(h("button", {
-      class: "pill" + (on ? " on" : ""), title: `${m.name}\nClick: use alone · Ctrl/Shift-click: add to compare`,
+      class: "pill" + (on ? " on" : ""), title: `${m.name}\nClick: use alone · ${MOD}/Shift-click: add to compare`,
       onclick: (e) => (e.ctrlKey || e.shiftKey || e.metaKey ? toggleModel(id) : selectModels([id])),
     }, (P().favorites.includes(id) ? "★ " : "") + shortName(m)));
   }
@@ -227,7 +227,7 @@ function renderQuick() {
 function renderGo() {
   const n = P().selected.length, b = $("go"), busy = [...S.jobs.values()].some((j) => j.state === "running" || j.state === "queued");
   b.textContent = n > 1 ? `Generate with ${n} models` : "Generate";
-  b.append(h("kbd", { style: "color:inherit;opacity:.6" }, "Ctrl ↵"));
+  b.append(h("kbd", { style: "color:inherit;opacity:.6" }, `${MOD} ↵`));
   b.disabled = false;
   b.title = busy ? "Jobs are running — you can queue more" : "";
 }
@@ -550,7 +550,7 @@ function showView(v) {
   const cite = S.quality.meta?.citation || (S.quality.byId.size ? "Ratings: Design Arena image arena via OpenRouter." : "");
   foot.textContent = chartMode || S.quality.byId.size
     ? `${cite}${S.quality.meta?.asOf ? " As of " + new Date(S.quality.meta.asOf).toLocaleDateString() + "." : ""} Elo is a crowd-voted preference score, not a guarantee for your prompts.`
-    : "Click a model to use it alone · tick boxes (or Ctrl/Shift-click) to compare several at once · ★ pins it to the top bar";
+    : macText("Click a model to use it alone · tick boxes (or Ctrl/Shift-click) to compare several at once · ★ pins it to the top bar");
   if (chartMode) renderValueChart();
 }
 
@@ -606,7 +606,7 @@ function renderValueChart() {
       h("div", {}, p.observed ? `You paid ~${money(p.x)}/img (${p.n} images)` : `List price ${p.m.price || money(p.x)}`),
       spd ? h("div", {}, spd) : null,
       h("div", { class: "hint" }, p.front ? "Best value: nothing is both cheaper and better" : "A cheaper or better model beats this on both"),
-      h("div", { class: "hint" }, "Click to use · Ctrl/Shift-click to compare"));
+      h("div", { class: "hint" }, macText("Click to use · Ctrl/Shift-click to compare")));
     const r = box.getBoundingClientRect();
     tip.hidden = false;
     tip.style.left = Math.min(ev.clientX - r.left + 14, r.width - 270) + "px";
@@ -945,7 +945,7 @@ function renderEmpty() {
       h("button", { class: "btn primary big", onclick: startConnect }, "Connect with OpenRouter"));
   } else if (none) {
     e.append(h("div", { class: "penny" }), h("h2", {}, "Nothing here yet"),
-      h("p", {}, "Pick a model, write a prompt and press Ctrl+Enter. Select several models to compare them side by side."));
+      h("p", {}, macText("Pick a model, write a prompt and press Ctrl+Enter. Select several models to compare them side by side.")));
   } else {
     e.append(h("p", {}, "No images match your filters."));
   }
@@ -1202,11 +1202,86 @@ async function saveAs(id) {
   } catch (e) { toast(errText(e), true); }
 }
 
+// ---------- updates ----------
+let pendingUpdate = null;
+const DAY = 24 * 3600 * 1000;
+
+function showUpdateBadge(info) {
+  pendingUpdate = info;
+  const b = $("btnUpdate");
+  b.hidden = !(info?.available && P().skipVersion !== info.latest);
+  if (!b.hidden) b.textContent = `Update ${info.latest}`;
+}
+
+// Quiet background check: failures (offline, rate limit) are ignored.
+async function maybeCheckUpdate() {
+  if (P().autoUpdate === false || Date.now() - (P().lastUpdateCheck || 0) < DAY) return;
+  try {
+    const info = await go().CheckForUpdate();
+    P().lastUpdateCheck = Date.now();
+    savePrefs();
+    showUpdateBadge(info);
+  } catch { /* try again next launch */ }
+}
+
+function openUpdateDialog(info) {
+  $("upTitle").textContent = `Pennyframe ${info.latest} is available`;
+  $("upSub").textContent = `You have ${info.current}. Your images, settings and keys are kept.`;
+  $("upNotes").textContent = info.notes || "";
+  $("upNotes").hidden = !info.notes;
+  const cmd = !!info.command, dl = !cmd;
+  $("upCmd").hidden = !cmd;
+  $("upDl").hidden = !dl;
+  if (cmd) {
+    $("upCmdText").textContent = info.command;
+    $("upCmdHint").textContent = info.method === "scoop"
+      ? "Run it in PowerShell. Pennyframe closes while it updates; open it again afterwards."
+      : "Run it in Terminal. Quit Pennyframe first, then open it again afterwards.";
+  } else {
+    $("upDownload").textContent = info.method === "installer" ? "Download the new installer" : "Download update";
+    $("upDlHint").textContent = info.method === "installer"
+      ? "Close Pennyframe, run the installer and it replaces this version."
+      : info.download && /\.zip$/.test(info.download) ? "Open the zip and drag the app into Applications, replacing the old one." : "Opens the download in your browser.";
+  }
+  $("upDownload").onclick = () => rt().BrowserOpenURL(info.download || info.page);
+  $("upCopy").onclick = () => navigator.clipboard.writeText(info.command).then(() => toast("Command copied"));
+  $("upNotesLink").onclick = () => rt().BrowserOpenURL(info.page);
+  $("upSkip").onclick = () => { P().skipVersion = info.latest; savePrefs(); showUpdateBadge(info); $("dlgUpdate").close(); };
+  $("upLater").onclick = () => $("dlgUpdate").close();
+  $("dlgUpdate").showModal();
+}
+
+async function checkUpdateNow() {
+  const btn = $("updateCheck");
+  btn.disabled = true;
+  $("updateStatus").textContent = "Checking…";
+  try {
+    const info = await go().CheckForUpdate();
+    P().lastUpdateCheck = Date.now();
+    savePrefs();
+    if (info.available) {
+      P().skipVersion = null; // asked explicitly, so don't hide it
+      showUpdateBadge(info);
+      $("updateStatus").textContent = `Version ${info.latest} is available.`;
+      $("dlgSettings").close();
+      openUpdateDialog(info);
+    } else {
+      $("updateStatus").textContent = `You're up to date (${info.current}).`;
+    }
+  } catch (e) {
+    $("updateStatus").textContent = "Couldn't check: " + errText(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---------- settings ----------
 function openSettings() {
   $("outDir").textContent = S.outputDir;
   $("modelStats").textContent = `${S.models.length} image models cached`;
   go().Version().then((v) => { $("appVersion").textContent = "Pennyframe " + v; });
+  $("autoUpdate").checked = P().autoUpdate !== false;
+  $("updateStatus").textContent = "";
   $("dlgSettings").showModal();
 }
 
@@ -1285,6 +1360,9 @@ function wire() {
       renderGrid();
     } catch (e) { toast(errText(e), true); }
   };
+  $("btnUpdate").onclick = () => pendingUpdate && openUpdateDialog(pendingUpdate);
+  $("updateCheck").onclick = checkUpdateNow;
+  $("autoUpdate").onchange = (e) => { P().autoUpdate = e.target.checked; savePrefs(); };
   $("modelsRefresh").onclick = async () => { await refreshModels(true); $("modelStats").textContent = `${S.models.length} image models cached`; };
 
   $("go").onclick = generate;
@@ -1366,9 +1444,22 @@ function wire() {
 }
 
 // ---------- boot ----------
+const IS_MAC = /Mac/i.test(navigator.platform);
+const MOD = IS_MAC ? "⌘" : "Ctrl";
+const macText = (str) => (IS_MAC ? str.replace(/Ctrl\+?/g, "⌘") : str);
+function macifyLabels() {
+  if (!IS_MAC) return;
+  for (const el of document.querySelectorAll("kbd, [title]")) {
+    if (el.tagName === "KBD" && /^Ctrl/.test(el.textContent)) el.textContent = el.textContent.replace(/^Ctrl\s*/, "⌘");
+    const t = el.getAttribute("title");
+    if (t && t.includes("Ctrl")) el.setAttribute("title", t.replace(/Ctrl\+/g, "⌘").replace(/Ctrl/g, "⌘"));
+  }
+}
+
 async function main() {
   while (!window.go?.main?.App) await new Promise((r) => setTimeout(r, 20)); // bindings arrive just after load
   wire();
+  macifyLabels();
   const b = await go().Bootstrap();
   try { Object.assign(S.prefs, JSON.parse(b.prefs || "{}")); } catch { /* fresh prefs */ }
   P().params ||= {};
@@ -1410,6 +1501,7 @@ async function main() {
     if ($("dlgModels").open) { renderPalette(); if (chartMode) renderValueChart(); }
   });
   refreshModels(false);
+  setTimeout(maybeCheckUpdate, 4000); // after first paint, off the critical path
 }
 
 main().catch((e) => { document.body.prepend(h("pre", { style: "color:#f07178;padding:20px" }, "Startup failed: " + errText(e))); });

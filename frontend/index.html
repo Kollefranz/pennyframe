@@ -13,6 +13,7 @@
     <div class="quick" id="quick"></div>
     <button class="btn" id="btnModels" title="Browse models (Ctrl+K)">Models <kbd>Ctrl K</kbd></button>
     <div class="spacer"></div>
+    <button class="btn update" id="btnUpdate" hidden title="A newer version of Pennyframe is available"></button>
     <div class="keyswitch">
       <button class="btn keybtn" id="btnKey" title="Switch or add API keys (Ctrl+Shift+K · Alt+1…9)"></button>
       <div class="menu" id="keyMenu" hidden></div>
@@ -149,6 +150,28 @@
   </div>
 </dialog>
 
+<dialog id="dlgUpdate" class="modal">
+  <div class="form">
+    <h2 id="upTitle"></h2>
+    <p class="hint" id="upSub"></p>
+    <pre class="notes" id="upNotes" hidden></pre>
+    <div id="upCmd" class="stack" hidden>
+      <span class="label">Update with this command</span>
+      <div class="row"><code class="cmd" id="upCmdText"></code><button class="btn" id="upCopy">Copy</button></div>
+      <span class="hint" id="upCmdHint"></span>
+    </div>
+    <div id="upDl" class="stack" hidden>
+      <button class="btn primary big" id="upDownload">Download update</button>
+      <span class="hint" id="upDlHint"></span>
+    </div>
+    <div class="row end">
+      <button class="btn" id="upNotesLink">Release notes</button>
+      <button class="btn" id="upSkip">Skip this version</button>
+      <button class="btn" id="upLater">Later</button>
+    </div>
+  </div>
+</dialog>
+
 <dialog id="dlgSettings" class="modal">
   <div class="form">
     <h2>Settings</h2>
@@ -161,6 +184,12 @@
       <span class="label">Model catalog</span>
       <span class="hint" id="modelStats"></span>
       <div class="row"><button class="btn" id="modelsRefresh">Refresh list</button></div>
+    </div>
+    <div class="field">
+      <span class="label">Updates</span>
+      <span class="hint" id="updateStatus"></span>
+      <label class="check"><input type="checkbox" id="autoUpdate"><span>Check for updates automatically (once a day, asks GitHub)</span></label>
+      <div class="row"><button class="btn" id="updateCheck">Check now</button></div>
     </div>
     <div class="row end"><span class="hint" id="appVersion" style="margin-right:auto"></span><button class="btn primary" id="settingsClose">Close</button></div>
   </div>

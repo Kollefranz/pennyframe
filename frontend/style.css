@@ -184,6 +184,9 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
 #kiSecret { font: 12px ui-monospace, Consolas, monospace; }
 #kiInfo { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0; }
 /* ring spinner: a soft comet arc on a faint track, eased so it breathes instead of whirring */
+.btn.update { background: var(--accent-soft); border-color: var(--accent); color: var(--text); font-weight: 600; }
+.notes { margin: 0; max-height: 180px; overflow-y: auto; white-space: pre-wrap; font: 12px/1.5 ui-monospace, Consolas, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; color: var(--dim); }
+.cmd { flex: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; user-select: all; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .lead { margin: 0; font-size: 15px; }
 .steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; color: var(--dim); }
