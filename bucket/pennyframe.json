@@ -3,7 +3,7 @@
     "description": "Fast desktop app for generating, saving and browsing images with OpenRouter image models",
     "homepage": "https://github.com/Kollefranz/pennyframe",
     "url": "https://github.com/Kollefranz/pennyframe/releases/download/v0.1.0/pennyframe-0.1.0-windows-amd64.zip",
-    "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "92bf3662b8590872344c83efe47ab9f167562bb179e5afc7143e27b4247ef09b",
     "bin": "pennyframe.exe",
     "shortcuts": [
         [
