@@ -1,6 +1,29 @@
-# Pennyframe
+<p align="center">
+  <img src="docs/icon.png" width="96" height="96" alt="Pennyframe">
+</p>
 
-Fast desktop app for generating, saving and browsing images with [OpenRouter](https://openrouter.ai) image models. Go backend, [Wails v2](https://wails.io) shell (WebView2), plain HTML/CSS/JS frontend — no Node toolchain, no CGO.
+<h1 align="center">Pennyframe</h1>
+
+<p align="center">
+  <b>Generate, compare and keep images from any OpenRouter model.</b><br>
+  A fast native Windows app. One-click sign-in, switch keys and models instantly, see which model is worth its price.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Kollefranz/pennyframe/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Kollefranz/pennyframe?color=d9904f&label=release"></a>
+  <a href="https://github.com/Kollefranz/pennyframe/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Kollefranz/pennyframe/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-3b3b46">
+  <img alt="Built with Go" src="https://img.shields.io/badge/built%20with-Go-00ADD8">
+</p>
+
+<p align="center">
+  <a href="#install-scoop">Install</a> ·
+  <a href="#use-it">Use it</a> ·
+  <a href="#releasing">Releasing</a> ·
+  <a href="#development">Development</a>
+</p>
+
+Go backend, [Wails v2](https://wails.io) shell (WebView2), plain HTML/CSS/JS frontend — no Node toolchain, no CGO. Works with [OpenRouter](https://openrouter.ai) image models.
 
 ## Install (Scoop)
 
