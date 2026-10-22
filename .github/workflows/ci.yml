@@ -36,6 +36,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # wails build passes this framework to the linker itself; plain go build needs it spelled out.
       - run: go build -tags desktop,production -o /dev/null .
+        env:
+          CGO_LDFLAGS: -framework UniformTypeIdentifiers
       - name: Cask is valid Ruby
         run: ruby -c Casks/pennyframe.rb

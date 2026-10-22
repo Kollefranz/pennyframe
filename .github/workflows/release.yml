@@ -57,7 +57,7 @@ jobs:
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Package (universal .app zip)
-        run: ./scripts/package-macos.sh "${RAW_VERSION#v}"
+        run: bash scripts/package-macos.sh "${RAW_VERSION#v}"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-macos
