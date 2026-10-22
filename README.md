@@ -23,6 +23,10 @@
   <a href="#development">Development</a>
 </p>
 
+<p align="center">
+  <img src="docs/screenshot.webp" alt="Pennyframe: the gallery of generated images, a model quick-switch bar and the generation settings" width="900">
+</p>
+
 Go backend, [Wails v2](https://wails.io) shell (WebView2), plain HTML/CSS/JS frontend — no Node toolchain, no CGO. Works with [OpenRouter](https://openrouter.ai) image models.
 
 ## Install (Scoop)
