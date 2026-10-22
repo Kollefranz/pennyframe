@@ -26,3 +26,16 @@ jobs:
       - name: Manifest is valid JSON
         shell: pwsh
         run: Get-Content bucket/pennyframe.json -Raw | ConvertFrom-Json | Out-Null
+
+  # Catches macOS-only build breakage before a release does.
+  macos-build:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -tags desktop,production -o /dev/null .
+      - name: Cask is valid Ruby
+        run: ruby -c Casks/pennyframe.rb

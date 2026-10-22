@@ -1,49 +1,99 @@
 name: release
 
-# Push a tag like v0.2.0 to build, publish the Scoop zip and update the bucket manifest.
+# Push a tag like v0.3.0 to build the Windows zip + installer and the macOS app, publish them as a
+# GitHub release, and update the Scoop manifest and Homebrew cask.
+# "Run workflow" (workflow_dispatch) does a dry run: it builds everything but publishes nothing.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build, like 0.3.0
+        required: true
 
 permissions:
   contents: write
 
+env:
+  RAW_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
       - name: Install wails
         shell: bash
         run: |
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: Build, package, update manifest
+      - name: Install Inno Setup
         shell: pwsh
-        run: ./scripts/release.ps1 -Version ('${{ github.ref_name }}' -replace '^v', '') -Repo '${{ github.repository }}' -SkipTests
+        run: choco install innosetup -y --no-progress
+      - name: Package (zip + installer)
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Version ($env:RAW_VERSION -replace '^v', '') -SkipTests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: dist/*
+          if-no-files-found: error
 
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install wails
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Package (universal .app zip)
+        run: ./scripts/package-macos.sh "${RAW_VERSION#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Update Scoop manifest, Homebrew cask and checksums
+        shell: pwsh
+        run: ./scripts/update-manifests.ps1 -Version ($env:RAW_VERSION -replace '^v', '') -Repo '${{ github.repository }}'
       - name: Create GitHub release
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/*.zip dist/*.sha256 --title "${{ github.ref_name }}" --generate-notes
-
-      - name: Commit updated manifest to main
-        shell: bash
+        run: gh release create "${{ github.ref_name }}" dist/* --title "${{ github.ref_name }}" --generate-notes
+      - name: Commit updated manifests to main
         run: |
           cp bucket/pennyframe.json "$RUNNER_TEMP/pennyframe.json"
-          git checkout -- bucket/pennyframe.json
+          cp Casks/pennyframe.rb "$RUNNER_TEMP/pennyframe.rb"
+          git checkout -- bucket/pennyframe.json Casks/pennyframe.rb
           git fetch origin main
           git checkout -B main origin/main
           cp "$RUNNER_TEMP/pennyframe.json" bucket/pennyframe.json
+          cp "$RUNNER_TEMP/pennyframe.rb" Casks/pennyframe.rb
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bucket/pennyframe.json
+          git add bucket/pennyframe.json Casks/pennyframe.rb
           git diff --cached --quiet || git commit -m "chore(bucket): update pennyframe to ${{ github.ref_name }}"
           git push origin main
