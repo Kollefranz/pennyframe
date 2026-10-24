@@ -1149,6 +1149,7 @@ const PARAM_LABELS = { aspect_ratio: "Aspect", resolution: "Resolution", quality
 function renderViewer() {
   const m = S.images.find((x) => x.id === viewId);
   if (!m) { $("dlgView").close(); return; }
+  if (Z.id !== m.id) { Z.id = m.id; resetZoom(); }
   $("lbImg").src = "/img/" + m.id;
   $("lbImg").alt = m.prompt;
   const list = viewList(), i = list.findIndex((x) => x.id === m.id);
@@ -1190,7 +1191,8 @@ function renderViewer() {
       h("button", { class: "btn", "aria-haspopup": "menu", onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(folderMenuItems([m.id]), r.left, r.bottom + 4, { targets: [m.id] }); } }, "Folder ▾"),
       h("button", { class: "btn", onclick: () => saveAs(m.id) }, "Save as…"),
       h("button", { class: "btn", onclick: () => go().RevealImage(m.id) }, IS_MAC ? "Show in Finder" : "Show in Explorer"),
-      deleteButton(m.id)));
+      deleteButton(m.id)),
+    h("div", { class: "hint" }, "Scroll to zoom · drag to pan · double-click for 100% · 0 to reset"));
 }
 
 async function viewerArchive(m) {
@@ -1254,6 +1256,80 @@ async function saveAs(id) {
     const p = await go().SaveImageAs(id);
     if (p) toast("Saved to " + p);
   } catch (e) { toast(errText(e), true); }
+}
+
+// ---------- viewer zoom ----------
+// The image is laid out to fit; zoom is a CSS transform about its centre (translate, then scale).
+const Z = { s: 1, x: 0, y: 0, id: null };
+const ZMAX = 24;
+
+function applyZoom() {
+  const img = $("lbImg"), W = img.offsetWidth, H = img.offsetHeight;
+  if (Z.s <= 1.001) { Z.s = 1; Z.x = Z.y = 0; } else {
+    // keep some of the image in view: at most a quarter of the frame past the edge
+    const mx = ((Z.s - 1) * W) / 2 + W / 4, my = ((Z.s - 1) * H) / 2 + H / 4;
+    Z.x = Math.max(-mx, Math.min(mx, Z.x));
+    Z.y = Math.max(-my, Math.min(my, Z.y));
+  }
+  img.style.transform = Z.s === 1 ? "" : `translate(${Z.x}px, ${Z.y}px) scale(${Z.s})`;
+  $("lbStage").classList.toggle("zoomed", Z.s > 1);
+  $("lbZoom").hidden = Z.s === 1;
+  if (Z.s > 1 && img.naturalWidth) {
+    // 100% means one image pixel per screen pixel
+    const fit = Math.min(W / img.naturalWidth, H / img.naturalHeight);
+    $("lbZoomText").textContent = Math.round(Z.s * fit * 100 * (window.devicePixelRatio || 1)) + "%";
+  }
+}
+
+function resetZoom() {
+  Z.s = 1; Z.x = Z.y = 0;
+  applyZoom();
+}
+
+// Zoom by `factor` keeping the point under (clientX, clientY) fixed; defaults to the stage centre.
+function zoomBy(factor, clientX, clientY) {
+  const r = $("lbStage").getBoundingClientRect();
+  const px = (clientX ?? r.left + r.width / 2) - (r.left + r.width / 2), py = (clientY ?? r.top + r.height / 2) - (r.top + r.height / 2);
+  const s2 = Math.max(1, Math.min(ZMAX, Z.s * factor)), k = s2 / Z.s;
+  Z.x = px - (px - Z.x) * k;
+  Z.y = py - (py - Z.y) * k;
+  Z.s = s2;
+  applyZoom();
+}
+
+function wireZoom() {
+  const stage = $("lbStage"), img = $("lbImg");
+  stage.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const px = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1; // lines/pages -> pixels
+    zoomBy(Math.exp(-e.deltaY * px * 0.0015), e.clientX, e.clientY);
+  }, { passive: false });
+  // double-click: jump to actual pixels at the cursor, or back to fit
+  img.addEventListener("dblclick", (e) => {
+    if (Z.s > 1) { resetZoom(); return; }
+    const fit = Math.min(img.offsetWidth / img.naturalWidth, img.offsetHeight / img.naturalHeight) || 1;
+    zoomBy(Math.max(2.5, 1 / fit / (window.devicePixelRatio || 1)), e.clientX, e.clientY);
+  });
+  let drag = null;
+  img.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || Z.s <= 1) return;
+    drag = { x: e.clientX, y: e.clientY };
+    img.setPointerCapture(e.pointerId);
+    stage.classList.add("panning");
+  });
+  img.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    Z.x += e.clientX - drag.x;
+    Z.y += e.clientY - drag.y;
+    drag = { x: e.clientX, y: e.clientY };
+    applyZoom();
+  });
+  const end = () => { drag = null; stage.classList.remove("panning"); };
+  img.addEventListener("pointerup", end);
+  img.addEventListener("pointercancel", end);
+  $("lbZoomReset").onclick = resetZoom;
+  $("dlgView").addEventListener("close", () => { Z.id = null; resetZoom(); });
+  window.addEventListener("resize", applyZoom);
 }
 
 // ---------- context menu ----------
@@ -1785,6 +1861,7 @@ function wire() {
     showImageMenu(viewId, e.clientX, e.clientY, true);
   });
   $("nameCancel").onclick = () => $("dlgName").close("cancel");
+  wireZoom();
 
   document.addEventListener("keydown", (e) => {
     const mod = e.ctrlKey || e.metaKey;
@@ -1804,6 +1881,9 @@ function wire() {
       if (e.key === "ArrowLeft") stepViewer(-1);
       else if (e.key === "ArrowRight") stepViewer(1);
       else if (e.key.toLowerCase() === "f") toggleImageFav(viewId);
+      else if (!mod && (e.key === "+" || e.key === "=")) zoomBy(1.4);
+      else if (!mod && (e.key === "-" || e.key === "_")) zoomBy(1 / 1.4);
+      else if (!mod && e.key === "0") resetZoom();
     }
     if (e.key === "Escape") closeKeyMenu();
     const typing = /input|textarea|select/i.test(e.target.tagName) || e.target.isContentEditable;

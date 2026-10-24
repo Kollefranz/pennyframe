@@ -295,6 +295,11 @@ dialog::backdrop { background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
 .lightbox::backdrop { background: #000; }
 .lb-stage { flex: 1; position: relative; display: grid; place-items: center; min-width: 0; padding: 18px; }
 .lb-stage img { position: absolute; inset: 18px; width: calc(100% - 36px); height: calc(100% - 36px); object-fit: contain; border-radius: 4px; background: repeating-conic-gradient(#1a1a1d 0% 25%, #131315 0% 50%) 0 0 / 20px 20px; }
+.lb-stage { overflow: hidden; }
+.lb-stage img { transform-origin: center; user-select: none; touch-action: none; }
+.lb-stage.zoomed img { cursor: grab; }
+.lb-stage.panning img { cursor: grabbing; }
+.lb-zoom { position: absolute; left: 12px; bottom: 12px; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 4px 5px 4px 11px; font-size: 12px; background: rgba(20,20,24,.8); color: #ececf1; border: 1px solid rgba(255,255,255,.14); border-radius: 9px; backdrop-filter: blur(6px); }
 .lb-nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,.08); color: #fff; border: 0; width: 44px; height: 70px; font-size: 30px; cursor: pointer; border-radius: 10px; opacity: .6; }
 .lb-nav:hover { opacity: 1; background: rgba(255,255,255,.16); }
 .lb-nav.prev { left: 10px; } .lb-nav.next { right: 10px; }
