@@ -1,9 +1,9 @@
 {
-    "version": "0.3.1",
+    "version": "0.3.2",
     "description": "Fast desktop app for generating, saving and browsing images with OpenRouter image models",
     "homepage": "https://github.com/Kollefranz/pennyframe",
-    "url": "https://github.com/Kollefranz/pennyframe/releases/download/v0.3.1/pennyframe-0.3.1-windows-amd64.zip",
-    "hash": "fc45b34e0279933411666cf3c19d4bc7aa2f0c367ba59bc5505388910c42ec74",
+    "url": "https://github.com/Kollefranz/pennyframe/releases/download/v0.3.2/pennyframe-0.3.2-windows-amd64.zip",
+    "hash": "7a44171d7bd5af1f3390c6bb66c7e59df7deb29db39fbe3efc8a8591fa0a0021",
     "bin": "pennyframe.exe",
     "shortcuts": [
         [
