@@ -155,6 +155,29 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
 .card.sel img { transform: scale(.94); border-radius: 6px; }
 .card.sel .pick { opacity: 1; background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .selbar { background: var(--accent-soft); border-bottom-color: var(--accent); }
+
+/* folders */
+.folders { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; }
+.folders .pill .n { color: var(--faint); margin-left: 7px; font-size: 12px; }
+.folders .pill.on .n { color: var(--dim); }
+.folders .pill.add { border-style: dashed; }
+.fgroup { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.fgroup .more { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 2px 7px; border-radius: 6px; }
+.fgroup .more:hover { background: var(--hover); color: var(--text); }
+.card.ctx-target { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* context menu */
+.ctx-root { position: fixed; inset: 0; z-index: 300; }
+.ctx { position: fixed; min-width: 210px; max-width: 320px; max-height: calc(100vh - 16px); overflow-y: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 5px; outline: none; animation: pop .12s ease-out; }
+.ctx-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 7px 9px; cursor: pointer; color: inherit; }
+.ctx-item:hover, .ctx-item:focus-visible { background: var(--hover); outline: none; }
+.ctx-item .ck { width: 14px; flex: none; text-align: center; color: var(--accent); }
+.ctx-item .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-item .arr { color: var(--faint); }
+.ctx-item.danger { color: var(--danger); }
+.ctx-item.armed, .ctx-item.armed:hover { background: var(--danger); color: #fff; }
+.ctx-item:disabled { opacity: .45; cursor: default; }
+.ctx-sep { height: 1px; background: var(--line); margin: 5px 2px; }
 .warn-text { color: var(--danger); font-weight: 600; }
 .toast .link { margin-left: 12px; font-weight: 600; }
 .card .shade { position: absolute; inset: auto 0 0 0; padding: 22px 9px 7px; background: linear-gradient(transparent, rgba(0,0,0,.72)); color: #fff; font-size: 12px; opacity: 0; transition: opacity .15s; pointer-events: none; display: flex; flex-direction: column; gap: 1px; }

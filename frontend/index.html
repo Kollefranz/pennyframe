@@ -52,6 +52,7 @@
         <input type="range" id="thumbSize" min="140" max="420" step="10" aria-label="Thumbnail size">
       </div>
       <div class="toolbar selbar" id="selbar" hidden></div>
+      <nav class="folders" id="folders" aria-label="Folders"></nav>
       <div class="scroll" id="scroll">
         <div id="grid"></div>
         <div id="empty" class="empty" hidden></div>
@@ -193,6 +194,20 @@
     </div>
     <div class="row end"><span class="hint" id="appVersion" style="margin-right:auto"></span><button class="btn primary" id="settingsClose">Close</button></div>
   </div>
+</dialog>
+
+<dialog id="dlgName" class="modal">
+  <form method="dialog" class="form">
+    <h2 id="nameTitle"></h2>
+    <label>Name
+      <input type="text" id="nameInput" maxlength="60" autocomplete="off" spellcheck="false" aria-label="Folder name">
+    </label>
+    <p class="error" id="nameError" hidden></p>
+    <div class="row end">
+      <button type="button" class="btn" id="nameCancel">Cancel</button>
+      <button type="submit" class="btn primary" value="ok" id="nameOk"></button>
+    </div>
+  </form>
 </dialog>
 
 <dialog id="dlgView" class="lightbox">

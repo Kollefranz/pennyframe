@@ -57,7 +57,8 @@ const S = {
   early: new Map(), // events that arrived before Generate() returned
   keyStatus: new Map(),
   refs: [], // {src, preview}
-  filter: { q: "", fav: false, model: "", archived: false },
+  filter: { q: "", fav: false, model: "", archived: false, folder: "" },
+  folders: [], // {id, name}, sorted by name
   quality: { byId: new Map(), meta: {} }, // crowd-sourced image Elo by model id
   sel: new Set(), // selected image ids (always a subset of what's visible)
   anchor: null, // last clicked id, start of a shift-click range
@@ -767,11 +768,17 @@ async function addFiles(files) {
   renderRefs();
 }
 
-function addGalleryRef(id) {
-  if (S.refs.some((r) => r.src === "gallery:" + id)) return;
-  S.refs.push({ src: "gallery:" + id, preview: "/thumb/" + id });
+const addGalleryRef = (id) => addGalleryRefs([id]);
+
+function addGalleryRefs(ids) {
+  let added = 0;
+  for (const id of ids) {
+    if (S.refs.some((r) => r.src === "gallery:" + id)) continue;
+    S.refs.push({ src: "gallery:" + id, preview: "/thumb/" + id });
+    added++;
+  }
   renderRefs();
-  toast("Added as reference image");
+  toast(added ? `Added ${added} reference image${added > 1 ? "s" : ""}` : "Already a reference image");
 }
 
 function renderRefs() {
@@ -841,9 +848,9 @@ function retryJob(j) {
 const els = new Map(); // key -> element
 
 function filteredImages() {
-  const { q, fav, model } = S.filter, needle = q.trim().toLowerCase();
+  const { q, fav, model, folder } = S.filter, needle = q.trim().toLowerCase();
   return S.images.filter((m) =>
-    !!m.archived === S.filter.archived && (!fav || m.favorite) && (!model || m.model === model) &&
+    !!m.archived === S.filter.archived && (!fav || m.favorite) && (!model || m.model === model) && (!folder || m.folder === folder) &&
     (!needle || `${m.prompt} ${m.modelName} ${m.model}`.toLowerCase().includes(needle)));
 }
 
@@ -896,7 +903,13 @@ function imageCard(m) {
       onkeydown: (e) => {
         if (e.key === "Enter") openViewer(m.id);
         else if (e.key === " ") { e.preventDefault(); selectClick(m.id, e); }
-      } },
+        else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+          e.preventDefault();
+          const r = e.currentTarget.getBoundingClientRect();
+          showImageMenu(m.id, r.left + r.width / 2, r.top + r.height / 2);
+        }
+      },
+      oncontextmenu: (e) => { e.preventDefault(); showImageMenu(m.id, e.clientX, e.clientY); } },
       h("button", { class: "pick", type: "button", tabindex: -1, "aria-label": "Select", onclick: (e) => { e.stopPropagation(); selectClick(m.id, e); } }, "✓"),
       h("img", { src: "/thumb/" + m.id, loading: "lazy", decoding: "async", alt: m.prompt, draggable: false }),
       h("div", { class: "shade" }, h("b", {}, m.modelName), h("i", {}, (m.seconds ? fmtSecs(m.seconds) + " · " : "") + m.prompt)),
@@ -925,6 +938,7 @@ function renderGrid() {
   const archivedN = S.images.filter((m) => m.archived).length, pool = S.filter.archived ? archivedN : S.images.length - archivedN;
   $("count").textContent = S.filter.archived ? `${imgs.length} archived` : imgs.length === pool ? `${imgs.length} images` : `${imgs.length} of ${pool}`;
   $("archivedToggle").textContent = archivedN ? `Archived (${archivedN})` : "Archived";
+  renderFolders();
   renderEmpty();
   renderSelBar();
   refreshModelFilter();
@@ -947,6 +961,9 @@ function renderEmpty() {
   } else if (none) {
     e.append(h("div", { class: "penny" }), h("h2", {}, "Nothing here yet"),
       h("p", {}, macText("Pick a model, write a prompt and press Ctrl+Enter. Select several models to compare them side by side.")));
+  } else if (S.filter.folder && !S.images.some((m) => m.folder === S.filter.folder && !!m.archived === S.filter.archived)) {
+    e.append(h("h2", {}, folderById(S.filter.folder)?.name || "Folder"),
+      h("p", {}, "This folder is empty. Right-click images and choose Move to folder to put them here."));
   } else {
     e.append(h("p", {}, "No images match your filters."));
   }
@@ -1011,6 +1028,7 @@ function renderSelBar() {
     h("div", { class: "spacer" }),
     h("button", { class: "btn", onclick: () => bulkFavorite(ids, !allFav) }, allFav ? "☆ Unfavorite" : "★ Favorite"),
     h("button", { class: "btn", onclick: () => bulkArchive(ids, !archivedView) }, archivedView ? "Unarchive" : "Archive"),
+    h("button", { class: "btn", "aria-haspopup": "menu", onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(folderMenuItems(ids), r.left, r.bottom + 4, { targets: ids }); } }, "Folder ▾"),
     deleteArmed
       ? [h("span", { class: "warn-text" }, `Delete ${n} permanently?`),
          h("button", { class: "btn danger", onclick: () => bulkDelete(ids) }, "Yes, delete"),
@@ -1033,8 +1051,10 @@ function armDelete() {
 async function bulkFavorite(ids, fav) {
   try {
     await go().SetFavorites(ids, fav);
-    S.images.forEach((m) => { if (S.sel.has(m.id)) m.favorite = fav; });
+    const set = new Set(ids);
+    S.images.forEach((m) => { if (set.has(m.id)) m.favorite = fav; });
     renderGrid();
+    if ($("dlgView").open) renderViewer();
   } catch (e) { toast(errText(e), true); }
 }
 
@@ -1117,6 +1137,7 @@ function renderViewer() {
   add("Cost", m.cost != null ? money(m.cost) : "not reported");
   if (m.costCount > 1 && m.costTotal != null) add("Request total", `${money(m.costTotal)} for ${m.costCount} images`);
   add("Key", m.keyName);
+  add("Folder", folderById(m.folder)?.name);
   add("References", m.refs || null);
   for (const [k, v] of Object.entries(m.params || {})) add(PARAM_LABELS[k] || k, String(v));
   add("Created", new Date(m.createdAt).toLocaleString());
@@ -1139,8 +1160,9 @@ function renderViewer() {
       h("button", { class: "btn", onclick: () => copyImage(m.id) }, "Copy image"),
       h("button", { class: "btn", onclick: () => navigator.clipboard.writeText(m.prompt).then(() => toast("Prompt copied")) }, "Copy prompt"),
       h("button", { class: "btn", onclick: () => viewerArchive(m) }, m.archived ? "Unarchive" : "Archive"),
+      h("button", { class: "btn", "aria-haspopup": "menu", onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(folderMenuItems([m.id]), r.left, r.bottom + 4, { targets: [m.id] }); } }, "Folder ▾"),
       h("button", { class: "btn", onclick: () => saveAs(m.id) }, "Save as…"),
-      h("button", { class: "btn", onclick: () => go().RevealImage(m.id) }, "Show in folder"),
+      h("button", { class: "btn", onclick: () => go().RevealImage(m.id) }, IS_MAC ? "Show in Finder" : "Show in Explorer"),
       deleteButton(m.id)));
 }
 
@@ -1156,16 +1178,20 @@ function deleteButton(id) {
   const b = h("button", { class: "btn danger", onclick: async () => {
     if (!armed) { armed = true; b.textContent = "Click again to delete"; timer = setTimeout(() => { armed = false; b.textContent = "Delete"; }, 3000); return; }
     clearTimeout(timer);
-    try {
-      await go().DeleteImages([id]);
-      const list = viewList(), i = list.findIndex((x) => x.id === id);
-      const next = list[i + 1] || list[i - 1];
-      S.images = S.images.filter((x) => x.id !== id);
-      renderGrid();
-      if (next) { viewId = next.id; renderViewer(); } else $("dlgView").close();
-    } catch (e) { toast(errText(e), true); }
+    deleteInViewer(id);
   } }, "Delete");
   return b;
+}
+
+async function deleteInViewer(id) {
+  try {
+    await go().DeleteImages([id]);
+    const list = viewList(), i = list.findIndex((x) => x.id === id);
+    const next = list[i + 1] || list[i - 1];
+    S.images = S.images.filter((x) => x.id !== id);
+    renderGrid();
+    if (next) { viewId = next.id; renderViewer(); } else $("dlgView").close();
+  } catch (e) { toast(errText(e), true); }
 }
 
 function reuse(m) {
@@ -1201,6 +1227,325 @@ async function saveAs(id) {
     const p = await go().SaveImageAs(id);
     if (p) toast("Saved to " + p);
   } catch (e) { toast(errText(e), true); }
+}
+
+// ---------- context menu ----------
+let menu = null; // {root, targets, prevFocus, onKey}
+
+function closeMenu() {
+  if (!menu) return;
+  const { root, targets, prevFocus, onKey } = menu;
+  menu = null;
+  window.removeEventListener("keydown", onKey, true);
+  window.removeEventListener("resize", closeMenu);
+  window.removeEventListener("blur", closeMenu);
+  root.remove();
+  for (const id of targets) els.get("img:" + id)?.classList.remove("ctx-target");
+  if (prevFocus?.isConnected) prevFocus.focus({ preventScroll: true });
+}
+
+// Drops empty entries and stray separators so callers can build lists with `cond && item`.
+function cleanItems(items) {
+  const out = [];
+  for (const it of items.filter(Boolean)) {
+    if (it === "-" && (!out.length || out[out.length - 1] === "-")) continue;
+    out.push(it);
+  }
+  while (out[out.length - 1] === "-") out.pop();
+  return out;
+}
+
+// items: "-" | {label, onclick, sub, checked, danger, arm, disabled}. `arm` is the label of a click-again confirmation.
+function showMenu(items, x, y, { targets = [] } = {}) {
+  closeMenu();
+  items = cleanItems(items);
+  if (!items.length) return;
+  // Inside an open lightbox the menu must be a descendant of the modal dialog, or the page treats it as inert.
+  const host = $("dlgView").open ? $("dlgView") : document.body;
+  const root = h("div", {
+    class: "ctx-root",
+    onpointerdown: (e) => { if (e.target === root) closeMenu(); },
+    oncontextmenu: (e) => { e.preventDefault(); if (e.target === root) closeMenu(); },
+  });
+
+  const place = (el, left, top, flipLeft) => {
+    el.style.left = "0px";
+    el.style.top = "0px";
+    const w = el.offsetWidth, hgt = el.offsetHeight;
+    if (left + w > innerWidth - 8) left = flipLeft ?? innerWidth - w - 8;
+    el.style.left = Math.max(8, left) + "px";
+    el.style.top = Math.max(8, Math.min(top, innerHeight - hgt - 8)) + "px";
+  };
+
+  const buildPanel = (list) => {
+    const panel = h("div", { class: "ctx", role: "menu", tabindex: "-1" });
+    let sub = null;
+    const closeSub = () => { if (sub) { sub.panel.remove(); sub.btn.setAttribute("aria-expanded", "false"); sub = null; } };
+    const openSub = (btn, subItems) => {
+      if (sub?.btn === btn) return null;
+      closeSub();
+      const p = buildPanel(cleanItems(subItems));
+      root.append(p);
+      const r = btn.getBoundingClientRect();
+      place(p, r.right - 4, r.top - 6, r.left - p.offsetWidth + 4);
+      sub = { panel: p, btn };
+      btn.setAttribute("aria-expanded", "true");
+      return p;
+    };
+    for (const it of list) {
+      if (it === "-") { panel.append(h("div", { class: "ctx-sep", role: "separator" })); continue; }
+      let armed = false;
+      const lbl = h("span", { class: "lbl" }, it.label);
+      const btn = h("button", {
+        type: "button", role: "menuitem", class: "ctx-item" + (it.danger ? " danger" : ""), disabled: it.disabled,
+        "aria-haspopup": it.sub ? "menu" : false,
+        onmouseenter: () => { if (it.sub) openSub(btn, it.sub); else closeSub(); },
+        onclick: () => {
+          if (it.sub) { (openSub(btn, it.sub) || sub.panel).querySelector(".ctx-item")?.focus(); return; }
+          if (it.arm && !armed) { armed = true; lbl.textContent = it.arm; btn.classList.add("armed"); return; }
+          closeMenu();
+          it.onclick?.();
+        },
+      }, h("span", { class: "ck", "aria-hidden": "true" }, it.checked ? "✓" : ""), lbl, it.sub ? h("span", { class: "arr", "aria-hidden": "true" }, "›") : null);
+      panel.append(btn);
+    }
+    panel._sub = () => sub;
+    panel._closeSub = closeSub;
+    return panel;
+  };
+
+  const onKey = (e) => {
+    const panels = [...root.querySelectorAll(".ctx")];
+    const main = panels[0], sub = main._sub();
+    const cur = panels.find((p) => p.contains(document.activeElement)) || main;
+    const btns = [...cur.querySelectorAll(".ctx-item:not(:disabled)")];
+    const i = btns.indexOf(document.activeElement);
+    const backToParent = () => { const b = sub.btn; main._closeSub(); b.focus(); };
+    switch (e.key) {
+      case "Escape":
+        e.preventDefault(); e.stopPropagation();
+        if (sub) backToParent(); else closeMenu();
+        return;
+      case "ArrowDown": case "ArrowUp": {
+        e.preventDefault(); e.stopPropagation();
+        if (!btns.length) return;
+        const d = e.key === "ArrowDown" ? 1 : -1;
+        btns[i < 0 ? (d > 0 ? 0 : btns.length - 1) : (i + d + btns.length) % btns.length].focus();
+        return;
+      }
+      case "Home": case "End":
+        e.preventDefault(); e.stopPropagation();
+        btns[e.key === "Home" ? 0 : btns.length - 1]?.focus();
+        return;
+      case "ArrowRight":
+        e.preventDefault(); e.stopPropagation();
+        if (document.activeElement?.getAttribute("aria-haspopup") === "menu") document.activeElement.click();
+        return;
+      case "ArrowLeft":
+        e.preventDefault(); e.stopPropagation();
+        if (sub && cur !== main) backToParent();
+        return;
+      case "Tab": closeMenu(); return;
+      case "Enter": case " ": return; // let the focused item activate
+      default: e.stopPropagation(); // keep viewer shortcuts from firing under an open menu
+    }
+  };
+
+  host.append(root);
+  const panel = buildPanel(items);
+  root.append(panel);
+  place(panel, x, y, x - panel.offsetWidth);
+  menu = { root, targets, prevFocus: document.activeElement, onKey };
+  for (const id of targets) els.get("img:" + id)?.classList.add("ctx-target");
+  window.addEventListener("keydown", onKey, true);
+  window.addEventListener("resize", closeMenu);
+  window.addEventListener("blur", closeMenu);
+  panel.focus({ preventScroll: true });
+}
+
+// A right-click on a selected image acts on the whole selection; on any other image, on just that one.
+function showImageMenu(id, x, y, viewer = false) {
+  const ids = !viewer && S.sel.has(id) ? [...S.sel] : [id];
+  showMenu(imageMenuItems(ids, viewer), x, y, { targets: ids });
+}
+
+function imageMenuItems(ids, viewer) {
+  const picked = ids.map((id) => S.images.find((m) => m.id === id)).filter(Boolean);
+  if (!picked.length) return [];
+  const n = picked.length, one = n === 1 ? picked[0] : null;
+  const allFav = picked.every((m) => m.favorite), allArch = picked.every((m) => m.archived);
+  const noun = n === 1 ? "image" : `${n} images`;
+  return [
+    one && !viewer && { label: "Open", onclick: () => openViewer(one.id) },
+    one && { label: "Copy image", onclick: () => copyImage(one.id) },
+    one && { label: "Copy prompt", onclick: () => navigator.clipboard.writeText(one.prompt).then(() => toast("Prompt copied")) },
+    "-",
+    { label: allFav ? "Remove from favorites" : "Add to favorites", onclick: () => bulkFavorite(ids, !allFav) },
+    { label: allArch ? "Unarchive" : "Archive", onclick: () => (viewer ? viewerArchive(one) : bulkArchive(ids, !allArch)) },
+    { label: "Move to folder", sub: folderMenuItems(ids) },
+    "-",
+    { label: "Use as reference", onclick: () => addGalleryRefs(ids) },
+    one && { label: "Reuse settings", onclick: () => reuse(one) },
+    one && { label: "Save as…", onclick: () => saveAs(one.id) },
+    one && { label: IS_MAC ? "Show in Finder" : "Show in Explorer", onclick: () => go().RevealImage(one.id) },
+    "-",
+    { label: `Delete ${noun}…`, danger: true, arm: `Click again to delete ${noun}`, onclick: () => (viewer ? deleteInViewer(one.id) : bulkDelete(ids)) },
+  ];
+}
+
+// ---------- folders ----------
+const folderById = (id) => (id ? S.folders.find((f) => f.id === id) : undefined);
+const sortFolders = () => S.folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+
+function folderMenuItems(ids) {
+  const picked = ids.map((id) => S.images.find((m) => m.id === id)).filter(Boolean);
+  const first = picked[0]?.folder || "", same = picked.every((m) => (m.folder || "") === first);
+  const items = S.folders.map((f) => ({ label: f.name, checked: same && first === f.id, onclick: () => moveToFolder(ids, f.id) }));
+  if (items.length) items.push("-");
+  items.push({ label: "New folder…", onclick: () => createFolder(ids) });
+  if (picked.some((m) => folderById(m.folder))) items.push({ label: "Remove from folder", onclick: () => moveToFolder(ids, "") });
+  return items;
+}
+
+async function resyncGallery() {
+  try {
+    const b = await go().Bootstrap();
+    S.images = b.images || [];
+    S.folders = b.folders || [];
+  } catch { /* keep what we have */ }
+  renderGrid();
+  paintSelection();
+}
+
+async function moveToFolder(ids, folderId, quiet) {
+  const set = new Set(ids);
+  const changed = S.images.filter((m) => set.has(m.id) && (m.folder || "") !== folderId);
+  if (!changed.length) { if (!quiet) toast("Already there"); return; }
+  const prev = new Map(changed.map((m) => [m.id, m.folder || ""]));
+  const list = viewList(), vi = list.findIndex((m) => m.id === viewId), neighbor = list[vi + 1] || list[vi - 1];
+  try {
+    await go().MoveToFolder(changed.map((m) => m.id), folderId);
+  } catch (e) {
+    toast(errText(e), true);
+    await resyncGallery();
+    return;
+  }
+  changed.forEach((m) => { m.folder = folderId || undefined; });
+  renderGrid();
+  paintSelection();
+  if ($("dlgView").open) {
+    if (viewList().some((m) => m.id === viewId)) renderViewer();
+    else if (neighbor && viewList().some((m) => m.id === neighbor.id)) { viewId = neighbor.id; renderViewer(); } else $("dlgView").close();
+  }
+  if (quiet) return;
+  const word = changed.length === 1 ? "image" : "images";
+  const msg = folderId ? `Moved ${changed.length} ${word} to “${folderById(folderId)?.name || "folder"}”` : `Took ${changed.length} ${word} out of their folder`;
+  toast(msg, false, { label: "Undo", fn: () => undoMove(prev) });
+}
+
+async function undoMove(prev) {
+  const groups = new Map();
+  for (const [id, f] of prev) (groups.get(f) || groups.set(f, []).get(f)).push(id);
+  for (const [f, ids] of groups) await moveToFolder(ids, f, true);
+}
+
+async function createFolder(ids) {
+  const f = await nameFlow("New folder", "", "Create", (n) => go().CreateFolder(n));
+  if (!f) return;
+  S.folders.push(f);
+  sortFolders();
+  if (ids?.length) await moveToFolder(ids, f.id); else renderGrid();
+}
+
+async function renameFolder(f) {
+  const name = await nameFlow("Rename folder", f.name, "Rename", async (n) => { await go().RenameFolder(f.id, n); return n; });
+  if (name == null) return;
+  const cur = folderById(f.id);
+  if (cur) cur.name = name.replace(/\s+/g, " ").trim();
+  sortFolders();
+  renderGrid();
+  if ($("dlgView").open) renderViewer();
+}
+
+async function deleteFolder(f) {
+  try { await go().DeleteFolder(f.id); } catch (e) { toast(errText(e), true); await resyncGallery(); return; }
+  S.folders = S.folders.filter((x) => x.id !== f.id);
+  S.images.forEach((m) => { if (m.folder === f.id) m.folder = undefined; });
+  if (S.filter.folder === f.id) S.filter.folder = "";
+  renderGrid();
+  paintSelection();
+  toast(`Deleted folder “${f.name}”. Its images are still in your gallery.`);
+}
+
+function openFolder(id) {
+  if (S.filter.folder === id) return;
+  S.filter.folder = id;
+  S.sel = new Set();
+  renderGrid();
+  paintSelection();
+  $("scroll").scrollTop = 0;
+}
+
+function folderMenu(f, x, y) {
+  showMenu([
+    { label: "Open", onclick: () => openFolder(f.id) },
+    { label: "Rename…", onclick: () => renameFolder(f) },
+    "-",
+    { label: "Delete folder…", danger: true, arm: "Click again to delete folder", onclick: () => deleteFolder(f) },
+  ], x, y);
+}
+
+let foldersSig = "";
+
+function renderFolders() {
+  if (S.filter.folder && !folderById(S.filter.folder)) S.filter.folder = "";
+  const counts = new Map();
+  for (const m of S.images) if (!m.archived && m.folder) counts.set(m.folder, (counts.get(m.folder) || 0) + 1);
+  const sig = S.filter.folder + "|" + S.folders.map((f) => `${f.id}:${f.name}:${counts.get(f.id) || 0}`).join("|");
+  if (sig === foldersSig) return;
+  foldersSig = sig;
+  const box = $("folders");
+  clear(box);
+  const all = !S.filter.folder;
+  put(box, h("button", { class: "pill" + (all ? " on" : ""), "aria-pressed": all, onclick: () => openFolder("") }, "All"));
+  for (const f of S.folders) {
+    const on = S.filter.folder === f.id;
+    const more = (e) => { const r = e.currentTarget.getBoundingClientRect(); folderMenu(f, r.left, r.bottom + 4); };
+    put(box, h("span", { class: "fgroup" },
+      h("button", {
+        class: "pill" + (on ? " on" : ""), "aria-pressed": on, title: "Right-click to rename or delete",
+        onclick: () => openFolder(f.id),
+        oncontextmenu: (e) => { e.preventDefault(); folderMenu(f, e.clientX, e.clientY); },
+        onkeydown: (e) => { if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) { e.preventDefault(); more(e); } },
+      }, f.name, h("span", { class: "n" }, String(counts.get(f.id) || 0))),
+      on ? h("button", { class: "more", "aria-label": "Folder options", "aria-haspopup": "menu", onclick: more }, "⋯") : null));
+  }
+  put(box, h("button", { class: "pill add", onclick: () => createFolder(null) }, "＋ New folder"));
+}
+
+// Resolves to the entered name, or null if cancelled. `submit` may throw to show its message and ask again.
+async function nameFlow(title, initial, okLabel, submit) {
+  let err = "", val = initial;
+  for (;;) {
+    const name = await askName(title, val, okLabel, err);
+    if (name == null) return null;
+    try { return await submit(name); } catch (e) { err = errText(e); val = name; }
+  }
+}
+
+function askName(title, value, okLabel, error) {
+  const dlg = $("dlgName"), input = $("nameInput");
+  $("nameTitle").textContent = title;
+  $("nameOk").textContent = okLabel;
+  $("nameError").textContent = error || "";
+  $("nameError").hidden = !error;
+  input.value = value;
+  dlg.returnValue = "";
+  return new Promise((resolve) => {
+    dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok" ? input.value : null), { once: true });
+    dlg.showModal();
+    input.select();
+  });
 }
 
 // ---------- updates ----------
@@ -1356,6 +1701,8 @@ function wire() {
       const b = await go().ChooseOutputDir();
       if (!b) return;
       S.images = b.images || [];
+      S.folders = b.folders || [];
+      S.filter.folder = "";
       S.outputDir = b.outputDir;
       $("outDir").textContent = S.outputDir;
       renderGrid();
@@ -1405,6 +1752,12 @@ function wire() {
   $("lbPrev").onclick = () => stepViewer(-1);
   $("lbNext").onclick = () => stepViewer(1);
   $("lbStage").addEventListener("click", (e) => { if (e.target === $("lbStage")) $("dlgView").close(); });
+  $("lbStage").addEventListener("contextmenu", (e) => {
+    if (e.target.closest("button")) return;
+    e.preventDefault();
+    showImageMenu(viewId, e.clientX, e.clientY, true);
+  });
+  $("nameCancel").onclick = () => $("dlgName").close("cancel");
 
   document.addEventListener("keydown", (e) => {
     const mod = e.ctrlKey || e.metaKey;
@@ -1466,6 +1819,7 @@ async function main() {
   P().params ||= {};
   setModels(b.models);
   S.images = b.images || [];
+  S.folders = b.folders || [];
   S.outputDir = b.outputDir;
   $("prompt").value = P().prompt || "";
   $("thumbSize").value = P().thumb || 220;

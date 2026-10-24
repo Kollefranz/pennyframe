@@ -109,6 +109,7 @@ type Boot struct {
 	Keys      []KeyView          `json:"keys"`
 	Models    []openrouter.Model `json:"models"`
 	Images    []store.Meta       `json:"images"`
+	Folders   []store.Folder     `json:"folders"`
 	Prefs     string             `json:"prefs"`
 	OutputDir string             `json:"outputDir"`
 	EnvKey    bool               `json:"envKey"`
@@ -124,6 +125,7 @@ func (a *App) Bootstrap() Boot {
 		Keys:      a.keyViews(),
 		Models:    models,
 		Images:    a.gallery().List(),
+		Folders:   a.gallery().Folders(),
 		Prefs:     a.cfg.Prefs(),
 		OutputDir: a.cfg.OutputDir(),
 		EnvKey:    os.Getenv("OPENROUTER_API_KEY") != "",
@@ -821,6 +823,17 @@ func (a *App) SetFavorites(ids []string, fav bool) error {
 
 func (a *App) ArchiveImages(ids []string, archived bool) error {
 	return a.each(ids, func(id string) error { return a.gallery().SetArchived(id, archived) })
+}
+
+// ---------- folders ----------
+
+func (a *App) CreateFolder(name string) (store.Folder, error) { return a.gallery().CreateFolder(name) }
+func (a *App) RenameFolder(id, name string) error             { return a.gallery().RenameFolder(id, name) }
+func (a *App) DeleteFolder(id string) error                   { return a.gallery().DeleteFolder(id) }
+
+// MoveToFolder files the images into a folder; an empty folderID takes them out of their folder.
+func (a *App) MoveToFolder(ids []string, folderID string) error {
+	return a.each(ids, func(id string) error { return a.gallery().SetFolder(id, folderID) })
 }
 
 func (a *App) each(ids []string, fn func(string) error) error {

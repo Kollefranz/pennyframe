@@ -47,6 +47,7 @@ type Meta struct {
 	Batch     string         `json:"batch"`
 	Favorite  bool           `json:"favorite"`
 	Archived  bool           `json:"archived,omitempty"`
+	Folder    string         `json:"folder,omitempty"` // Folder.ID
 	CreatedAt time.Time      `json:"createdAt"`
 }
 
@@ -55,8 +56,9 @@ type Gallery struct {
 	dir      string
 	thumbDir string
 
-	mu    sync.RWMutex
-	items map[string]*Meta
+	mu      sync.RWMutex
+	items   map[string]*Meta
+	folders []Folder
 
 	thumbMu sync.Mutex
 	thumbs  map[string]*sync.Mutex
@@ -91,6 +93,7 @@ func OpenGallery(dir, thumbDir string) (*Gallery, error) {
 		}
 		g.items[m.ID] = &m
 	}
+	g.loadFolders()
 	return g, nil
 }
 

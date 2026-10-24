@@ -83,6 +83,8 @@ Your images, settings and keys live outside the install folder, so updating or u
 
 **Archive** hides images from the main view but keeps them (and their metadata) on disk; open **Archived** in the toolbar to see or restore them. Delete removes the files permanently after a confirmation.
 
+**Right-click and folders.** Right-click an image in the grid or the viewer to copy it, favorite, archive, delete, reuse its settings or use it as a reference; right-clicking a selected image acts on the whole selection. *Move to folder* files images into your own in-app folders (one folder per image). Folders appear as a row above the grid: click one to open it, right-click it to rename or delete it. Deleting a folder never deletes its images. Folder definitions are stored beside the images (`_folders.json`) and each image's sidecar records its folder, so they move with the image folder.
+
 Images are saved to `~/Pictures/Pennyframe` (changeable) as the original bytes plus a `.json` sidecar (prompt, model, params, cost, time, key name). Thumbnails are cached under `%APPDATA%\Pennyframe\thumbs`. Reference images (image-to-image) can be dropped, pasted, or taken from the gallery.
 
 ## Build
