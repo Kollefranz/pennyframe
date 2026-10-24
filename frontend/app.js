@@ -759,7 +759,8 @@ async function fileToRef(file) {
 }
 
 async function addFiles(files) {
-  for (const f of files) {
+  // Snapshot first: a drop's FileList is emptied once the event handler returns.
+  for (const f of Array.from(files)) {
     if (!f.type.startsWith("image/")) continue;
     try { S.refs.push(await fileToRef(f)); } catch { toast(`Couldn't read ${f.name || "image"}`, true); }
   }

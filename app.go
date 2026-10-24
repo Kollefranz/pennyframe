@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,7 +26,19 @@ const (
 	jobTimeout      = 10 * time.Minute
 	modelsTTL       = 6 * time.Hour
 	priceTTL        = 24 * time.Hour
+	maxRateRetries  = 4
+	maxRateWait     = 90 * time.Second
 )
+
+// rateRetryDelay honours Retry-After when given, else backs off 4s, 8s, 16s, 32s with jitter.
+func rateRetryDelay(attempt int, hint time.Duration) time.Duration {
+	d := hint
+	if d <= 0 {
+		d = 4 * time.Second << attempt
+		d += time.Duration(rand.Int64N(int64(d / 4)))
+	}
+	return min(d, maxRateWait)
+}
 
 // App is bound to the frontend; every exported method is callable from JS.
 type App struct {
@@ -638,12 +652,15 @@ func (a *App) runJob(ctx context.Context, batch string, info JobInfo, m openrout
 	upd(JobUpdate{State: "running", Notes: notes})
 
 	start := time.Now()
-	var resp *openrouter.GenerateResponse
-	var err error
 	if req.Stream {
 		defer a.clearPreview(info.ID)
+	}
+	call := func() (*openrouter.GenerateResponse, error) {
+		if !req.Stream {
+			return a.or.Generate(ctx, secret, req)
+		}
 		n := 0
-		resp, err = a.or.GenerateStream(ctx, secret, req, func(b64 string) {
+		resp, err := a.or.GenerateStream(ctx, secret, req, func(b64 string) {
 			data, derr := base64.StdEncoding.DecodeString(b64)
 			if derr != nil {
 				return
@@ -658,10 +675,32 @@ func (a *App) runJob(ctx context.Context, batch string, info JobInfo, m openrout
 			req.Stream = false
 			notes = append(notes, "Provider rejected streaming — used a normal request")
 			upd(JobUpdate{State: "running", Notes: notes})
-			resp, err = a.or.Generate(ctx, secret, req)
+			return a.or.Generate(ctx, secret, req)
 		}
-	} else {
-		resp, err = a.or.Generate(ctx, secret, req)
+		return resp, err
+	}
+	// 429s are refused before any work is done, so retrying costs nothing.
+	resp, err := call()
+	retries := 0
+	for ; retries < maxRateRetries; retries++ {
+		var ae *openrouter.APIError
+		if !errors.As(err, &ae) || ae.Status != http.StatusTooManyRequests || ctx.Err() != nil {
+			break
+		}
+		wait := rateRetryDelay(retries, ae.RetryAfter)
+		msg := fmt.Sprintf("Rate limited by the provider — retrying in %ds (%d/%d)", int(wait.Round(time.Second)/time.Second), retries+1, maxRateRetries)
+		upd(JobUpdate{State: "running", Notes: append([]string{msg}, notes...)})
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		resp, err = call()
+	}
+	if err == nil && retries > 0 {
+		notes = append(notes, fmt.Sprintf("Succeeded after %d rate-limit retries", retries))
 	}
 	secs := time.Since(start).Seconds()
 	if err != nil {

@@ -2,10 +2,12 @@ package openrouter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func sse(events ...string) http.HandlerFunc {
@@ -35,6 +37,51 @@ func TestStreamDeliversPartialsThenFinal(t *testing.T) {
 	}
 	if resp.Data[0].B64JSON != "RklOQUw=" || resp.Data[0].MediaType != "image/png" || resp.Usage.Cost != 0.011 {
 		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+func TestStreamUnderstandsImageEditEvents(t *testing.T) {
+	c := newTestClient(t, sse(
+		`{"type":"image_edit.partial_image","partial_image_index":0,"b64_json":"UDE="}`,
+		`{"type":"image_edit.completed","b64_json":"RklOQUw=","media_type":"image/png"}`,
+	))
+	partials := 0
+	resp, err := c.GenerateStream(context.Background(), "k", GenerateRequest{Model: "m", Prompt: "p"}, func(string) { partials++ })
+	if err != nil || partials != 1 || resp.Data[0].B64JSON != "RklOQUw=" {
+		t.Fatalf("partials=%d resp=%+v err=%v", partials, resp, err)
+	}
+}
+
+func TestStreamMidStreamRateLimit(t *testing.T) {
+	c := newTestClient(t, sse(`{"type":"error","error":{"message":"slow down","code":429}}`))
+	_, err := c.GenerateStream(context.Background(), "k", GenerateRequest{Model: "m", Prompt: "p"}, nil)
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Status != http.StatusTooManyRequests {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestRateLimitCarriesRetryAfter(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"Provider returned error","code":429}}`))
+	})
+	_, err := c.Generate(context.Background(), "k", GenerateRequest{Model: "m", Prompt: "p"})
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Status != 429 || ae.RetryAfter != 7*time.Second {
+		t.Fatalf("got %#v", err)
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	for in, want := range map[string]time.Duration{"": 0, "abc": 0, "3": 3 * time.Second, "0.5": 500 * time.Millisecond, "-2": 0} {
+		if got := parseRetryAfter(in); got != want {
+			t.Errorf("parseRetryAfter(%q) = %v, want %v", in, got, want)
+		}
+	}
+	if d := parseRetryAfter(time.Now().Add(30 * time.Second).UTC().Format(http.TimeFormat)); d < 25*time.Second || d > 31*time.Second {
+		t.Errorf("http-date form = %v", d)
 	}
 }
 

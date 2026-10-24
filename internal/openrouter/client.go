@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -48,6 +49,8 @@ type APIError struct {
 	Status  int
 	Code    string
 	Message string
+	// RetryAfter is the server's Retry-After hint, zero if absent.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -119,7 +122,7 @@ func parseError(resp *http.Response) error {
 			} `json:"metadata"`
 		} `json:"error"`
 	}
-	e := &APIError{Status: resp.StatusCode}
+	e := &APIError{Status: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
 	if json.Unmarshal(raw, &env) == nil && env.Error.Message != "" {
 		e.Message = env.Error.Message
 		e.Code = strings.Trim(string(env.Error.Code), `"`)
@@ -133,6 +136,18 @@ func parseError(resp *http.Response) error {
 		}
 	}
 	return e
+}
+
+// parseRetryAfter reads a Retry-After header given in seconds or as an HTTP date.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if secs, err := strconv.ParseFloat(v, 64); err == nil && secs > 0 {
+		return time.Duration(secs * float64(time.Second))
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return max(0, time.Until(t))
+	}
+	return 0
 }
 
 // KeyInfo describes the current API key (GET /key).
@@ -363,12 +378,13 @@ func (c *Client) GenerateStream(ctx context.Context, key string, req GenerateReq
 			}
 			var ev event
 			if json.Unmarshal([]byte(data), &ev) == nil {
-				switch ev.Type {
-				case "image_generation.partial_image":
+				// Edits (with reference images) stream as image_edit.*, plain generations as image_generation.*.
+				switch {
+				case strings.HasSuffix(ev.Type, ".partial_image"):
 					if onPartial != nil && ev.B64JSON != "" {
 						onPartial(ev.B64JSON)
 					}
-				case "image_generation.completed":
+				case strings.HasSuffix(ev.Type, ".completed"):
 					if ev.B64JSON == "" {
 						return nil, fmt.Errorf("OpenRouter completed the stream without an image")
 					}
@@ -377,12 +393,18 @@ func (c *Client) GenerateStream(ctx context.Context, key string, req GenerateReq
 						Data:    []GeneratedImage{{B64JSON: ev.B64JSON, MediaType: ev.MediaType}},
 						Usage:   ev.Usage,
 					}, nil
-				case "error":
+				case ev.Type == "error":
 					msg := "generation failed mid-stream"
-					if ev.Error != nil && ev.Error.Message != "" {
-						msg = ev.Error.Message
+					status := http.StatusBadGateway
+					if ev.Error != nil {
+						if ev.Error.Message != "" {
+							msg = ev.Error.Message
+						}
+						if strings.Trim(string(ev.Error.Code), `"`) == "429" {
+							status = http.StatusTooManyRequests
+						}
 					}
-					return nil, &APIError{Status: http.StatusBadGateway, Message: msg}
+					return nil, &APIError{Status: status, Message: msg}
 				}
 			}
 		}
