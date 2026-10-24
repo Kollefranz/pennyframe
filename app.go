@@ -650,7 +650,7 @@ func (a *App) runJob(ctx context.Context, batch string, info JobInfo, m openrout
 		return
 	}
 
-	req, sent, notes := buildRequest(m, in.Prompt, in.Params, refs)
+	req, sent, notes := buildRequest(m, in.Prompt, withRandomSeed(m, in.Params), refs)
 	upd(JobUpdate{State: "running", Notes: notes})
 
 	start := time.Now()

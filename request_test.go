@@ -76,6 +76,33 @@ func TestBuildRequestNoRefSupport(t *testing.T) {
 	}
 }
 
+func TestWithRandomSeed(t *testing.T) {
+	m := testModel()
+	seen := map[int64]bool{}
+	for range 20 {
+		p := withRandomSeed(m, Params{})
+		if p.Seed == nil || *p.Seed < 0 || *p.Seed >= 1<<31 {
+			t.Fatalf("bad seed: %v", p.Seed)
+		}
+		seen[*p.Seed] = true
+		if _, sent, _ := buildRequest(m, "x", p, nil); sent["seed"] != *p.Seed {
+			t.Fatalf("seed not recorded in sent params: %v", sent)
+		}
+	}
+	if len(seen) < 15 {
+		t.Fatalf("seeds should vary between requests, got %d distinct of 20", len(seen))
+	}
+
+	fixed := int64(42)
+	if p := withRandomSeed(m, Params{Seed: &fixed}); *p.Seed != 42 {
+		t.Fatalf("a user-chosen seed must be kept, got %d", *p.Seed)
+	}
+	delete(m.SupportedParams, "seed")
+	if p := withRandomSeed(m, Params{}); p.Seed != nil {
+		t.Fatal("no seed should be invented for a model that doesn't take one")
+	}
+}
+
 func TestBuildRequestStreaming(t *testing.T) {
 	m := testModel()
 	m.SupportsStreaming = true

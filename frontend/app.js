@@ -78,16 +78,38 @@ const activeKey = () => S.keys.find((k) => k.active);
 
 // ---------- capabilities & params ----------
 const PARAMS = [
-  { key: "aspectRatio", cap: "aspect_ratio", label: "Aspect ratio", kind: "ratio" },
-  { key: "resolution", cap: "resolution", label: "Resolution", kind: "seg" },
-  { key: "quality", cap: "quality", label: "Quality", kind: "seg" },
-  { key: "outputFormat", cap: "output_format", label: "Format", kind: "seg" },
-  { key: "background", cap: "background", label: "Background", kind: "seg" },
-  { key: "n", cap: "n", label: "Images per model", kind: "n" },
-  { key: "compression", cap: "output_compression", label: "Compression", kind: "range" },
-  { key: "seed", cap: "seed", label: "Seed", kind: "seed" },
-  { key: "stream", cap: "stream", label: "Live preview", kind: "stream" },
+  { key: "aspectRatio", cap: "aspect_ratio", label: "Aspect ratio", kind: "ratio",
+    help: "The shape of the image (width:height). Auto lets the model decide." },
+  { key: "resolution", cap: "resolution", label: "Resolution", kind: "seg",
+    help: "Output size. Bigger images take longer and usually cost more. Auto uses the model's default." },
+  { key: "quality", cap: "quality", label: "Quality", kind: "seg",
+    help: "How much effort the model spends. Higher quality is slower and usually costs more." },
+  { key: "outputFormat", cap: "output_format", label: "Format", kind: "seg",
+    help: "File type. PNG is lossless and the largest; JPEG and WebP are smaller. Only JPEG and WebP use the compression setting." },
+  { key: "background", cap: "background", label: "Background", kind: "seg",
+    help: "Transparent gives a cut-out without a backdrop (needs PNG or WebP). Opaque fills the background. Auto lets the model choose." },
+  { key: "n", cap: "n", label: "Images per model", kind: "n",
+    help: "How many images each selected model makes per request. Cost scales with the count." },
+  { key: "compression", cap: "output_compression", label: "Compression", kind: "range",
+    help: "JPEG and WebP only, 0–100. Higher keeps more detail and makes bigger files; lower makes smaller files with more visible artefacts. Leave on auto unless you need small files." },
+  { key: "seed", cap: "seed", label: "Seed", kind: "seed",
+    help: "The number that starts the random generation. Leave it empty and every image gets a new random seed (shown in its details). Fix one to get near-identical results for the same prompt and settings, which is handy for tweaking a prompt, but it makes every image look alike." },
+  { key: "stream", cap: "stream", label: "Live preview", kind: "stream",
+    help: "Shows rough in-progress renders on the card while the image is made. Single-image requests only; doesn't change the final image or cost." },
 ];
+
+// Hover text for individual values of the segmented controls.
+const VALUE_HELP = {
+  quality: { auto: "Let the model choose", low: "Fastest and cheapest, less detail", medium: "A balance of speed, cost and detail", high: "Most detail, slowest and priciest", standard: "Normal quality", hd: "Higher detail, slower and priciest" },
+  outputFormat: { png: "Lossless, largest files, supports transparency", jpeg: "Smaller files, no transparency", jpg: "Smaller files, no transparency", webp: "Small files, supports transparency" },
+  background: { transparent: "No backdrop (a cut-out), needs PNG or WebP", opaque: "Solid background", auto: "Let the model choose" },
+  resolution: { "0.5K": "About 512 px on the long side", "1K": "About 1024 px on the long side", "2K": "About 2048 px on the long side", "4K": "About 4096 px on the long side" },
+};
+
+function ratioHelp(r) {
+  const v = ratioVal(r);
+  return `${r}, ${v > 1.05 ? "landscape" : v < 0.95 ? "portrait" : "square"}`;
+}
 
 const selectedModels = () => P().selected.map((id) => S.byId.get(id)).filter(Boolean);
 
@@ -137,7 +159,8 @@ function renderParams() {
       if (d.kind === "ratio") vals.sort((a, b) => ratioVal(a) - ratioVal(b));
       else if (d.key === "resolution") vals.sort((a, b) => parseFloat(a) - parseFloat(b) || a.localeCompare(b));
       const cur = vals.includes(p[d.key]) ? p[d.key] : "";
-      const opt = (v, label) => h("button", { class: v === cur ? "on" : "", type: "button", onclick: () => set(d.key, v) },
+      const tip = (v) => (!v ? "Let the model decide" : d.kind === "ratio" ? ratioHelp(v) : VALUE_HELP[d.key]?.[v.toLowerCase()] || VALUE_HELP[d.key]?.[v]);
+      const opt = (v, label) => h("button", { class: v === cur ? "on" : "", type: "button", title: tip(v), onclick: () => set(d.key, v) },
         d.kind === "ratio" && v ? ratioIcon(v) : null, label);
       body = h("div", { class: "seg" }, opt("", "Auto"), vals.map((v) => opt(v, v)));
     } else if (d.kind === "n") {
@@ -158,11 +181,15 @@ function renderParams() {
         h("span", {}, on ? "Show partial renders while generating" : "Wait for the final image"),
         multi && on ? h("span", { class: "hint" }, " (single image only)") : null);
     } else if (d.kind === "seed") {
-      body = h("div", { class: "stepper" },
-        h("input", { type: "number", placeholder: "random", value: p.seed ?? "", onchange: (e) => set("seed", e.target.value === "" ? null : Math.trunc(+e.target.value)) }),
-        h("button", { class: "btn sm", type: "button", onclick: () => set("seed", Math.floor(Math.random() * 2 ** 31)) }, "🎲"));
+      const fixed = p.seed != null && p.seed !== "";
+      body = h("div", { class: "seedbox" },
+        h("div", { class: "stepper" },
+          h("input", { type: "number", placeholder: "random", value: p.seed ?? "", onchange: (e) => set("seed", e.target.value === "" ? null : Math.trunc(+e.target.value)) }),
+          h("button", { class: "btn sm", type: "button", title: "Pick a specific random seed and keep using it", onclick: () => set("seed", Math.floor(Math.random() * 2 ** 31)) }, "🎲"),
+          fixed ? h("button", { class: "btn sm", type: "button", title: "Back to a new random seed for every image", onclick: () => set("seed", null) }, "✕") : null),
+        h("span", { class: "hint" + (fixed ? " warn" : "") }, fixed ? "Fixed: results will look alike. Clear for variety." : "A new random seed for every image."));
     }
-    box.append(h("div", { class: "param" }, h("div", { class: "plabel" }, d.label), body));
+    box.append(h("div", { class: "param", title: d.help }, h("div", { class: "plabel" }, d.label, h("span", { class: "info", "aria-hidden": "true" }, "ⓘ")), body));
   }
   if (selectedModels().length && !box.children.length) {
     box.append(h("div", { class: "hint" }, "This model has no adjustable settings."));
@@ -1204,7 +1231,7 @@ function reuse(m) {
   savePrefs();
   renderParams();
   $("dlgView").close();
-  toast("Settings loaded");
+  toast(P().params.seed != null ? "Settings loaded, including its seed. Clear the seed for new variations." : "Settings loaded");
   $("prompt").focus();
 }
 

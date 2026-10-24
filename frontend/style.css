@@ -134,6 +134,11 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
 .stepper { display: flex; align-items: center; gap: 8px; }
 .stepper input { width: 70px; text-align: center; }
 .stepper input[type=range] { width: 100%; padding: 0; accent-color: var(--accent); }
+.param .info { color: var(--faint); cursor: help; font-size: 12px; }
+.param:hover .info { color: var(--accent); }
+.seedbox { display: flex; flex-direction: column; gap: 5px; }
+.seedbox .stepper input { width: 130px; text-align: left; }
+.hint.warn { color: var(--accent); }
 
 .stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }

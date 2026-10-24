@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"slices"
 
 	"pennyframe/internal/openrouter"
@@ -18,6 +19,17 @@ type Params struct {
 	Seed         *int64 `json:"seed"`
 	N            int    `json:"n"`
 	Stream       bool   `json:"stream"`
+}
+
+// withRandomSeed gives every request its own seed when the user hasn't fixed one, so providers that
+// default to a constant seed can't return near-identical images. The seed is recorded with the image.
+func withRandomSeed(m openrouter.Model, p Params) Params {
+	if c, ok := m.SupportedParams["seed"]; p.Seed != nil || !ok || c.Type != "boolean" {
+		return p
+	}
+	s := rand.Int64N(1 << 31)
+	p.Seed = &s
+	return p
 }
 
 // buildRequest adapts the user's params to what a specific model accepts.
