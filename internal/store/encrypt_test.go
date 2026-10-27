@@ -435,6 +435,68 @@ func TestInterruptedConversionIsFinishedOnUnlock(t *testing.T) {
 	v.assertNoPlaintext("after healing", []byte(secretPrompt), slice(data))
 }
 
+func TestStartupRemovesLeftoversOfInterruptedMoves(t *testing.T) {
+	v := newVault(t)
+	f := v.folder("Private", goodPass)
+	m, data := v.add(secretPrompt)
+	plainName := m.File
+	_ = v.g.SetFolder(m.ID, f.ID)
+	_, _ = v.g.ThumbBytes(m.ID, 400)
+
+	// what a crash could leave behind: the old plaintext copy and an unsealed thumbnail
+	stray := filepath.Join(v.dir, plainName)
+	strayThumb := filepath.Join(v.thumb, m.ID+"_320.jpg")
+	// unrelated files in the same folder must never be touched
+	mine := filepath.Join(v.dir, "holiday-photo.png")
+	alsoMine := filepath.Join(v.dir, "notes.txt")
+	for p, b := range map[string][]byte{stray: data, strayThumb: data, mine: data, alsoMine: []byte("keep me")} {
+		if err := os.WriteFile(p, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v.reopen()
+	for _, p := range []string{stray, strayThumb} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s survived startup cleanup", filepath.Base(p))
+		}
+	}
+	for _, p := range []string{mine, alsoMine} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s belongs to the user and must be left alone", filepath.Base(p))
+		}
+	}
+	cur, _ := v.g.Get(m.ID)
+	if _, err := os.Stat(filepath.Join(v.dir, cur.File)); err != nil {
+		t.Fatalf("the real encrypted file must survive: %v", err)
+	}
+	if err := v.g.UnlockFolder(f.ID, goodPass); err != nil {
+		t.Fatal(err)
+	}
+	if back, err := v.g.ReadImage(m.ID); err != nil || !bytes.Equal(back, data) {
+		t.Fatalf("image damaged by cleanup: %v", err)
+	}
+}
+
+func TestDeletingLeavesNothingBehind(t *testing.T) {
+	v := newVault(t)
+	f := v.folder("Private", goodPass)
+	plain, _ := v.add("plain")
+	priv, _ := v.add("private")
+	_ = v.g.SetFolder(priv.ID, f.ID)
+	_, _ = v.g.Thumb(plain.ID, 400)
+	_, _ = v.g.ThumbBytes(priv.ID, 400)
+	for _, id := range []string{plain.ID, priv.ID} {
+		if err := v.g.Delete(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p := range v.files() {
+		if !strings.HasSuffix(p, foldersFile) {
+			t.Errorf("left behind: %s", p)
+		}
+	}
+}
+
 func TestLockAllAndGalleryListHidesLockedDetails(t *testing.T) {
 	v := newVault(t)
 	a, b := v.folder("A", "alpha-password-1"), v.folder("B", "bravo-password-2")

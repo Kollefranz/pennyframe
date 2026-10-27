@@ -112,6 +112,7 @@ func OpenGallery(dir, thumbDir string) (*Gallery, error) {
 	}
 	g.loadFolders()
 	g.sweepLegacyThumbs()
+	g.sweepStale()
 	return g, nil
 }
 
@@ -313,12 +314,48 @@ func (g *Gallery) Delete(id string) error {
 		return errors.New("no such image")
 	}
 	delete(g.items, id)
-	file := m.File
+	file, enc := m.File, m.Encrypted
 	g.mu.Unlock()
-	_ = os.Remove(filepath.Join(g.dir, file))
-	_ = os.Remove(filepath.Join(g.dir, id+".json"))
-	g.removeThumbs(id, false)
+	// Unencrypted files are overwritten first (best effort) so a deleted image isn't left readable on disk.
+	if enc {
+		_ = os.Remove(filepath.Join(g.dir, file))
+	} else {
+		wipeFile(filepath.Join(g.dir, file))
+	}
+	wipeFile(filepath.Join(g.dir, id+".json"))
+	g.removeThumbs(id, !enc)
 	return nil
+}
+
+// sweepStale removes leftovers of interrupted moves: a second copy of a known image that its record
+// doesn't point at (possibly still readable), and unsealed thumbnails of encrypted images. It only
+// touches files named after an image id in this gallery, never anything else in the folder.
+func (g *Gallery) sweepStale() {
+	entries, err := os.ReadDir(g.dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		i := strings.IndexByte(name, '.')
+		if e.IsDir() || i <= 0 || strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if m, ok := g.items[name[:i]]; ok && m.File != name {
+			wipeFile(filepath.Join(g.dir, name))
+		}
+	}
+	for id, m := range g.items {
+		if !m.Encrypted {
+			continue
+		}
+		thumbs, _ := filepath.Glob(filepath.Join(g.thumbDir, id+"_*"))
+		for _, p := range thumbs {
+			if !strings.HasSuffix(p, ".enc") {
+				wipeFile(p)
+			}
+		}
+	}
 }
 
 // convertTo re-stores one image for a new home: the folder it will be in and whether that folder
