@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	_ "image/gif"
 	"image/jpeg"
@@ -21,8 +22,6 @@ import (
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 )
-
-const thumbSize = 512
 
 var ErrNoThumb = errors.New("no thumbnail for this format")
 
@@ -94,6 +93,7 @@ func OpenGallery(dir, thumbDir string) (*Gallery, error) {
 		g.items[m.ID] = &m
 	}
 	g.loadFolders()
+	g.sweepLegacyThumbs()
 	return g, nil
 }
 
@@ -216,23 +216,59 @@ func (g *Gallery) Delete(id string) error {
 	g.mu.Unlock()
 	_ = os.Remove(filepath.Join(g.dir, m.File))
 	_ = os.Remove(filepath.Join(g.dir, m.ID+".json"))
-	_ = os.Remove(g.thumbPath(id, false))
-	_ = os.Remove(g.thumbPath(id, true))
+	g.removeThumbs(id)
 	return nil
 }
 
-func (g *Gallery) thumbPath(id string, png bool) string {
+// ThumbSizes are the long-edge sizes thumbnails are cached at. Thumb serves the smallest one that is
+// big enough, so the browser never has to stretch a thumbnail or shrink it by a large factor.
+var ThumbSizes = []int{320, 480, 720, 1080, 1620}
+
+func thumbTier(want int) int {
+	for _, s := range ThumbSizes {
+		if s >= want {
+			return s
+		}
+	}
+	return ThumbSizes[len(ThumbSizes)-1]
+}
+
+func (g *Gallery) thumbPath(id string, size int, png bool) string {
 	ext := ".jpg"
 	if png {
 		ext = ".png"
 	}
-	return filepath.Join(g.thumbDir, id+ext)
+	return filepath.Join(g.thumbDir, fmt.Sprintf("%s_%d%s", id, size, ext))
 }
 
-// Thumb returns the path of a cached thumbnail, generating it on first use.
-func (g *Gallery) Thumb(id string) (string, error) {
+// removeThumbs deletes every cached size of one image's thumbnail.
+func (g *Gallery) removeThumbs(id string) {
+	old, _ := filepath.Glob(filepath.Join(g.thumbDir, id+"_*"))
+	for _, p := range old {
+		_ = os.Remove(p)
+	}
+}
+
+// sweepLegacyThumbs drops thumbnails from before sizes were part of the name: they were made with a
+// low-quality filter and are only a cache.
+func (g *Gallery) sweepLegacyThumbs() {
+	entries, err := os.ReadDir(g.thumbDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() && !strings.Contains(e.Name(), "_") && (strings.HasSuffix(e.Name(), ".jpg") || strings.HasSuffix(e.Name(), ".png")) {
+			_ = os.Remove(filepath.Join(g.thumbDir, e.Name()))
+		}
+	}
+}
+
+// Thumb returns the path of a cached thumbnail whose long edge is at least `want` pixels (when the
+// original is that large), generating it on first use. Images already smaller are only re-encoded.
+func (g *Gallery) Thumb(id string, want int) (string, error) {
+	size := thumbTier(want)
 	for _, isPNG := range []bool{false, true} {
-		if p := g.thumbPath(id, isPNG); fileExists(p) {
+		if p := g.thumbPath(id, size, isPNG); fileExists(p) {
 			return p, nil
 		}
 	}
@@ -240,11 +276,12 @@ func (g *Gallery) Thumb(id string) (string, error) {
 	if !ok {
 		return "", errors.New("no such image")
 	}
+	key := fmt.Sprintf("%s_%d", id, size)
 	g.thumbMu.Lock()
-	lock := g.thumbs[id]
+	lock := g.thumbs[key]
 	if lock == nil {
 		lock = &sync.Mutex{}
-		g.thumbs[id] = lock
+		g.thumbs[key] = lock
 	}
 	g.thumbMu.Unlock()
 	lock.Lock()
@@ -252,7 +289,7 @@ func (g *Gallery) Thumb(id string) (string, error) {
 
 	// Another goroutine may have finished while we waited.
 	for _, isPNG := range []bool{false, true} {
-		if p := g.thumbPath(id, isPNG); fileExists(p) {
+		if p := g.thumbPath(id, size, isPNG); fileExists(p) {
 			return p, nil
 		}
 	}
@@ -267,15 +304,17 @@ func (g *Gallery) Thumb(id string) (string, error) {
 	}
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
-	if w > thumbSize || h > thumbSize {
+	if w > size || h > size {
 		if w >= h {
-			h, w = h*thumbSize/w, thumbSize
+			h, w = h*size/w, size
 		} else {
-			w, h = w*thumbSize/h, thumbSize
+			w, h = w*size/h, size
 		}
 		w, h = max(w, 1), max(h, 1)
 		dst := image.NewNRGBA(image.Rect(0, 0, w, h))
-		draw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, draw.Over, nil)
+		// Catmull-Rom widens its kernel when shrinking, so it averages every source pixel it covers
+		// (the bilinear approximation only looks at four and aliases on large reductions).
+		draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Src, nil)
 		img = dst
 	}
 	var buf bytes.Buffer
@@ -283,12 +322,12 @@ func (g *Gallery) Thumb(id string) (string, error) {
 	if isPNG {
 		err = png.Encode(&buf, img)
 	} else {
-		err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 84})
+		err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90})
 	}
 	if err != nil {
 		return "", err
 	}
-	p := g.thumbPath(id, isPNG)
+	p := g.thumbPath(id, size, isPNG)
 	return p, writeFileAtomic(p, buf.Bytes())
 }
 

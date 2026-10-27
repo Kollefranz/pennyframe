@@ -801,7 +801,7 @@ function addGalleryRefs(ids) {
   let added = 0;
   for (const id of ids) {
     if (S.refs.some((r) => r.src === "gallery:" + id)) continue;
-    S.refs.push({ src: "gallery:" + id, preview: "/thumb/" + id });
+    S.refs.push({ src: "gallery:" + id, preview: "/thumb/" + id + "?s=1" });
     added++;
   }
   renderRefs();
@@ -874,6 +874,26 @@ function retryJob(j) {
 // ---------- gallery grid ----------
 const els = new Map(); // key -> element
 
+// Thumbnails are cached at a few sizes (see store.ThumbSizes). Ask for the smallest one that covers the
+// card at the screen's pixel density, with headroom for cards that stretch to fill their row, so the
+// browser neither enlarges a thumbnail nor shrinks it by a big factor.
+const THUMB_TIERS = [320, 480, 720, 1080, 1620];
+let thumbPx = THUMB_TIERS[0];
+
+function updateThumbPx() {
+  const need = (+$("thumbSize").value || 220) * (window.devicePixelRatio || 1) * 1.25;
+  const next = THUMB_TIERS.find((t) => t >= need) || THUMB_TIERS[THUMB_TIERS.length - 1];
+  if (next === thumbPx) return false;
+  thumbPx = next;
+  return true;
+}
+
+const thumbURL = (id) => `/thumb/${id}?s=${thumbPx}`;
+
+function refreshThumbs() {
+  for (const [key, el] of els) if (key.startsWith("img:")) el.querySelector("img").src = thumbURL(key.slice(4));
+}
+
 function filteredImages() {
   const { q, fav, model, folder } = S.filter, needle = q.trim().toLowerCase();
   return S.images.filter((m) =>
@@ -938,7 +958,7 @@ function imageCard(m) {
       },
       oncontextmenu: (e) => { e.preventDefault(); showImageMenu(m.id, e.clientX, e.clientY); } },
       h("button", { class: "pick", type: "button", tabindex: -1, "aria-label": "Select", onclick: (e) => { e.stopPropagation(); selectClick(m.id, e); } }, "✓"),
-      h("img", { src: "/thumb/" + m.id, loading: "lazy", decoding: "async", alt: m.prompt, draggable: false }),
+      h("img", { src: thumbURL(m.id), loading: "lazy", decoding: "async", alt: m.prompt, draggable: false }),
       h("div", { class: "shade" }, h("b", {}, m.modelName), h("i", {}, (m.seconds ? fmtSecs(m.seconds) + " · " : "") + m.prompt)),
       h("button", { class: "star", "aria-label": "Favorite", onclick: (e) => { e.stopPropagation(); toggleImageFav(m.id); } }, "★"));
     els.set(key, el);
@@ -1845,10 +1865,12 @@ function wire() {
     renderGrid();
     paintSelection();
   };
+  const swapThumbs = debounce(() => { if (updateThumbPx()) refreshThumbs(); }, 250);
   $("thumbSize").addEventListener("input", (e) => {
     document.documentElement.style.setProperty("--thumb", e.target.value + "px");
     P().thumb = +e.target.value;
     savePrefs();
+    swapThumbs();
   });
 
   $("lbClose").onclick = () => $("dlgView").close();
@@ -1931,6 +1953,7 @@ async function main() {
   $("prompt").value = P().prompt || "";
   $("thumbSize").value = P().thumb || 220;
   document.documentElement.style.setProperty("--thumb", $("thumbSize").value + "px");
+  updateThumbPx();
   $("keyEnv").hidden = !b.envKey;
   setKeys(b.keys);
   setQuality(b.quality);

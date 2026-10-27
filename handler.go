@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -20,7 +21,8 @@ func imageHandler(a *App) http.Handler {
 				return
 			}
 			if thumb {
-				if tp, err := a.gallery().Thumb(id); err == nil {
+				want, _ := strconv.Atoi(r.URL.Query().Get("s"))
+				if tp, err := a.gallery().Thumb(id, want); err == nil {
 					path = tp
 				}
 			}

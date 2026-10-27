@@ -95,14 +95,14 @@ func TestGalleryAddReloadThumbDelete(t *testing.T) {
 		t.Fatalf("meta = %+v", m)
 	}
 
-	tp, err := g.Thumb(m.ID)
+	tp, err := g.Thumb(m.ID, 0)
 	if err != nil || filepath.Ext(tp) != ".jpg" {
 		t.Fatalf("thumb %q err=%v", tp, err)
 	}
 	f, _ := os.Open(tp)
 	cfg, _, _ := image.DecodeConfig(f)
 	f.Close()
-	if cfg.Width != thumbSize || cfg.Height != thumbSize/2 {
+	if cfg.Width != ThumbSizes[0] || cfg.Height != ThumbSizes[0]/2 {
 		t.Fatalf("thumb dims %dx%d", cfg.Width, cfg.Height)
 	}
 
@@ -128,7 +128,7 @@ func TestGalleryAddReloadThumbDelete(t *testing.T) {
 func TestTransparentThumbIsPNG(t *testing.T) {
 	g, _ := OpenGallery(t.TempDir(), t.TempDir())
 	m, _ := g.Add(Meta{}, pngBytes(40, 40, 100))
-	tp, err := g.Thumb(m.ID)
+	tp, err := g.Thumb(m.ID, 0)
 	if err != nil || filepath.Ext(tp) != ".png" {
 		t.Fatalf("thumb %q err=%v", tp, err)
 	}
@@ -140,7 +140,7 @@ func TestSVGHasNoThumb(t *testing.T) {
 	if err != nil || m.MediaType != "image/svg+xml" || filepath.Ext(m.File) != ".svg" {
 		t.Fatalf("meta=%+v err=%v", m, err)
 	}
-	if _, err := g.Thumb(m.ID); !errors.Is(err, ErrNoThumb) {
+	if _, err := g.Thumb(m.ID, 0); !errors.Is(err, ErrNoThumb) {
 		t.Fatalf("want ErrNoThumb, got %v", err)
 	}
 }
