@@ -196,16 +196,15 @@
   </div>
 </dialog>
 
-<dialog id="dlgName" class="modal">
-  <form method="dialog" class="form">
-    <h2 id="nameTitle"></h2>
-    <label>Name
-      <input type="text" id="nameInput" maxlength="60" autocomplete="off" spellcheck="false" aria-label="Folder name">
-    </label>
-    <p class="error" id="nameError" hidden></p>
+<dialog id="dlgForm" class="modal">
+  <form method="dialog" class="form" id="formBody" autocomplete="off">
+    <h2 id="formTitle"></h2>
+    <p class="hint" id="formIntro" hidden></p>
+    <div class="stack" id="formFields"></div>
+    <p class="error" id="formError" role="alert" hidden></p>
     <div class="row end">
-      <button type="button" class="btn" id="nameCancel">Cancel</button>
-      <button type="submit" class="btn primary" value="ok" id="nameOk"></button>
+      <button type="button" class="btn" id="formCancel">Cancel</button>
+      <button type="submit" class="btn primary" id="formOk"></button>
     </div>
   </form>
 </dialog>

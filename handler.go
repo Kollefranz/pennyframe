@@ -1,12 +1,17 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"pennyframe/internal/store"
 )
 
-// imageHandler serves gallery images (/img/<id>) and cached thumbnails (/thumb/<id>) straight from disk.
+// imageHandler serves gallery images (/img/<id>) and cached thumbnails (/thumb/<id>?s=<px>).
+// Unencrypted images stream straight from disk. Encrypted ones are decrypted in memory. Everything is
+// sent with no-store so nothing readable is cached anywhere.
 func imageHandler(a *App) http.Handler {
 	mux := http.NewServeMux()
 	serve := func(thumb bool) http.HandlerFunc {
@@ -15,18 +20,46 @@ func imageHandler(a *App) http.Handler {
 			if i := strings.IndexByte(id, '.'); i >= 0 {
 				id = id[:i]
 			}
-			path, ok := a.gallery().Path(id)
+			// Never cacheable: a copy cached while an image was unencrypted would outlive moving it into an
+			// encrypted folder. The files are local, so serving them again is cheap.
+			w.Header().Set("Cache-Control", "no-store")
+			want, _ := strconv.Atoi(r.URL.Query().Get("s"))
+			g := a.gallery()
+			m, ok := g.Get(id)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			if m.Encrypted {
+				var data []byte
+				var err error
+				if thumb {
+					data, err = g.ThumbBytes(id, want)
+				}
+				if !thumb || errors.Is(err, store.ErrNoThumb) {
+					data, err = g.ReadImage(id)
+				}
+				switch {
+				case errors.Is(err, store.ErrLocked):
+					http.Error(w, "locked", http.StatusForbidden)
+				case err != nil:
+					http.Error(w, "unreadable", http.StatusInternalServerError)
+				default:
+					w.Header().Set("Content-Type", store.SniffMediaType(data))
+					_, _ = w.Write(data)
+				}
+				return
+			}
+			path, ok := g.Path(id)
 			if !ok {
 				http.NotFound(w, r)
 				return
 			}
 			if thumb {
-				want, _ := strconv.Atoi(r.URL.Query().Get("s"))
-				if tp, err := a.gallery().Thumb(id, want); err == nil {
+				if tp, err := g.Thumb(id, want); err == nil {
 					path = tp
 				}
 			}
-			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 			http.ServeFile(w, r, path)
 		}
 	}

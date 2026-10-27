@@ -895,9 +895,9 @@ function refreshThumbs() {
 }
 
 function filteredImages() {
-  const { q, fav, model, folder } = S.filter, needle = q.trim().toLowerCase();
+  const { q, fav, model } = S.filter, needle = q.trim().toLowerCase();
   return S.images.filter((m) =>
-    !!m.archived === S.filter.archived && (!fav || m.favorite) && (!model || m.model === model) && (!folder || m.folder === folder) &&
+    inScope(m) && !!m.archived === S.filter.archived && (!fav || m.favorite) && (!model || m.model === model) &&
     (!needle || `${m.prompt} ${m.modelName} ${m.model}`.toLowerCase().includes(needle)));
 }
 
@@ -982,7 +982,8 @@ function renderGrid() {
   const live = new Set(want);
   for (const [k, el] of els) if (!live.has(el)) els.delete(k);
 
-  const archivedN = S.images.filter((m) => m.archived).length, pool = S.filter.archived ? archivedN : S.images.length - archivedN;
+  const scoped = S.images.filter(inScope);
+  const archivedN = scoped.filter((m) => m.archived).length, pool = S.filter.archived ? archivedN : scoped.length - archivedN;
   $("count").textContent = S.filter.archived ? `${imgs.length} archived` : imgs.length === pool ? `${imgs.length} images` : `${imgs.length} of ${pool}`;
   $("archivedToggle").textContent = archivedN ? `Archived (${archivedN})` : "Archived";
   renderFolders();
@@ -994,7 +995,8 @@ function renderGrid() {
 function renderEmpty() {
   const e = $("empty");
   const noKey = !S.keys.length && !S.filter.archived;
-  const none = S.filter.archived ? !S.images.some((m) => m.archived) : !S.images.length && !S.jobs.size;
+  const scoped = S.images.filter(inScope);
+  const none = S.filter.archived ? !scoped.some((m) => m.archived) : !scoped.length && !S.jobs.size;
   e.hidden = !(noKey || none || (!filteredImages().length && (S.filter.archived || !S.jobs.size)));
   if (e.hidden) return;
   clear(e);
@@ -1005,12 +1007,12 @@ function renderEmpty() {
     e.append(h("div", { class: "penny" }), h("h2", {}, "Welcome to Pennyframe"),
       h("p", {}, "Connect your OpenRouter account to start making images — one click, and OpenRouter walks you through signing in. You can connect several keys and switch between them with Alt+1…9."),
       h("button", { class: "btn primary big", onclick: startConnect }, "Connect with OpenRouter"));
+  } else if (S.filter.folder && !scoped.some((m) => !!m.archived === S.filter.archived)) {
+    e.append(h("h2", {}, lockIcon(folderById(S.filter.folder) || {}) + (folderById(S.filter.folder)?.name || "Folder")),
+      h("p", {}, "This folder is empty. Right-click images and choose Move to folder to put them here."));
   } else if (none) {
     e.append(h("div", { class: "penny" }), h("h2", {}, "Nothing here yet"),
       h("p", {}, macText("Pick a model, write a prompt and press Ctrl+Enter. Select several models to compare them side by side.")));
-  } else if (S.filter.folder && !S.images.some((m) => m.folder === S.filter.folder && !!m.archived === S.filter.archived)) {
-    e.append(h("h2", {}, folderById(S.filter.folder)?.name || "Folder"),
-      h("p", {}, "This folder is empty. Right-click images and choose Move to folder to put them here."));
   } else {
     e.append(h("p", {}, "No images match your filters."));
   }
@@ -1018,7 +1020,7 @@ function renderEmpty() {
 
 function refreshModelFilter() {
   const sel = $("modelFilter"), seen = new Map();
-  for (const m of S.images) seen.set(m.model, m.modelName);
+  for (const m of S.images) if (inScope(m)) seen.set(m.model, m.modelName);
   const sig = [...seen.keys()].sort().join("|") + "#" + S.filter.model;
   if (sel.dataset.sig === sig) return;
   sel.dataset.sig = sig;
@@ -1130,9 +1132,8 @@ async function bulkDelete(ids) {
     toast(`Deleted ${ids.length} ${ids.length === 1 ? "image" : "images"}`);
   } catch (e) {
     // some may have been removed already; reload what is really on disk
-    try { S.images = (await go().Bootstrap()).images || []; } catch { /* keep list */ }
     S.sel = new Set();
-    renderGrid();
+    await resyncGallery();
     toast(errText(e), true);
   }
 }
@@ -1168,7 +1169,7 @@ const PARAM_LABELS = { aspect_ratio: "Aspect", resolution: "Resolution", quality
 
 function renderViewer() {
   const m = S.images.find((x) => x.id === viewId);
-  if (!m) { $("dlgView").close(); return; }
+  if (!m || m.locked) { $("dlgView").close(); return; }
   if (Z.id !== m.id) { Z.id = m.id; resetZoom(); }
   $("lbImg").src = "/img/" + m.id;
   $("lbImg").alt = m.prompt;
@@ -1185,7 +1186,8 @@ function renderViewer() {
   add("Cost", m.cost != null ? money(m.cost) : "not reported");
   if (m.costCount > 1 && m.costTotal != null) add("Request total", `${money(m.costTotal)} for ${m.costCount} images`);
   add("Key", m.keyName);
-  add("Folder", folderById(m.folder)?.name);
+  add("Folder", folderById(m.folder) ? lockIcon(folderById(m.folder)) + folderById(m.folder).name : null);
+  add("Storage", m.encrypted ? "Encrypted (AES-256-GCM)" : null);
   add("References", m.refs || null);
   for (const [k, v] of Object.entries(m.params || {})) add(PARAM_LABELS[k] || k, String(v));
   add("Created", new Date(m.createdAt).toLocaleString());
@@ -1210,7 +1212,7 @@ function renderViewer() {
       h("button", { class: "btn", onclick: () => viewerArchive(m) }, m.archived ? "Unarchive" : "Archive"),
       h("button", { class: "btn", "aria-haspopup": "menu", onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(folderMenuItems([m.id]), r.left, r.bottom + 4, { targets: [m.id] }); } }, "Folder ▾"),
       h("button", { class: "btn", onclick: () => saveAs(m.id) }, "Save as…"),
-      h("button", { class: "btn", onclick: () => go().RevealImage(m.id) }, IS_MAC ? "Show in Finder" : "Show in Explorer"),
+      m.encrypted ? null : h("button", { class: "btn", onclick: () => go().RevealImage(m.id) }, IS_MAC ? "Show in Finder" : "Show in Explorer"),
       deleteButton(m.id)),
     h("div", { class: "hint" }, "Scroll to zoom · drag to pan · double-click for 100% · 0 to reset"));
 }
@@ -1510,20 +1512,115 @@ function imageMenuItems(ids, viewer) {
     { label: "Use as reference", onclick: () => addGalleryRefs(ids) },
     one && { label: "Reuse settings", onclick: () => reuse(one) },
     one && { label: "Save as…", onclick: () => saveAs(one.id) },
-    one && { label: IS_MAC ? "Show in Finder" : "Show in Explorer", onclick: () => go().RevealImage(one.id) },
+    one && !one.encrypted && { label: IS_MAC ? "Show in Finder" : "Show in Explorer", onclick: () => go().RevealImage(one.id) },
     "-",
     { label: `Delete ${noun}…`, danger: true, arm: `Click again to delete ${noun}`, onclick: () => (viewer ? deleteInViewer(one.id) : bulkDelete(ids)) },
   ];
 }
 
+// ---------- forms ----------
+// Thrown by a form's submit for mistakes in what was typed: the message shows and the fields are kept.
+class FormError extends Error {}
+
+// A small modal form. spec: {title, intro, ok, busy, danger, fields: [{key, label, type, value, max, show}], submit(values)}.
+// Field types: text, password, check, note. `show(values)` hides a field until it applies. submit may throw to
+// show its message and keep the form open. Resolves to submit's result (true if it returned nothing), or null if cancelled.
+function formDialog(spec) {
+  const dlg = $("dlgForm"), box = $("formFields"), err = $("formError"), ok = $("formOk");
+  $("formTitle").textContent = spec.title;
+  $("formIntro").textContent = spec.intro || "";
+  $("formIntro").hidden = !spec.intro;
+  ok.textContent = spec.ok || "OK";
+  ok.classList.toggle("danger", !!spec.danger);
+  ok.classList.toggle("primary", !spec.danger);
+  err.hidden = true;
+  clear(box);
+
+  const fields = spec.fields || [], vals = {}, rows = [], inputs = {};
+  const refresh = () => { for (const r of rows) r.el.hidden = r.show ? !r.show({ ...vals }) : false; };
+  for (const f of fields) {
+    vals[f.key] = f.value ?? (f.type === "check" ? false : "");
+    let el;
+    if (f.type === "note") {
+      el = h("p", { class: "hint note" }, f.text);
+    } else if (f.type === "check") {
+      el = h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: !!vals[f.key], onchange: (e) => { vals[f.key] = e.target.checked; refresh(); } }),
+        h("span", {}, f.label));
+    } else {
+      const input = h("input", { type: f.type === "password" ? "password" : "text", value: vals[f.key], maxlength: f.max, spellcheck: "false", autocomplete: "off", "aria-label": f.label, oninput: (e) => { vals[f.key] = e.target.value; } });
+      inputs[f.key] = input;
+      el = h("label", {}, f.label, input);
+    }
+    rows.push({ el, show: f.show });
+    box.append(el);
+  }
+  const pwFields = fields.filter((f) => f.type === "password");
+  if (pwFields.length) {
+    const toggle = h("label", { class: "check" },
+      h("input", { type: "checkbox", onchange: (e) => { for (const f of pwFields) inputs[f.key].type = e.target.checked ? "text" : "password"; } }),
+      h("span", {}, "Show password"));
+    rows.push({ el: toggle, show: (v) => pwFields.some((f) => !f.show || f.show(v)) });
+    box.append(toggle);
+  }
+  refresh();
+
+  return new Promise((resolve) => {
+    let busy = false;
+    $("formBody").onsubmit = async (e) => {
+      e.preventDefault();
+      if (busy) return;
+      busy = true;
+      ok.disabled = true;
+      ok.textContent = spec.busy || "Working…";
+      err.hidden = true;
+      try {
+        const r = await spec.submit({ ...vals });
+        resolve(r ?? true);
+        dlg.close();
+      } catch (x) {
+        err.textContent = errText(x);
+        err.hidden = false;
+        if (!(x instanceof FormError)) for (const f of pwFields) { vals[f.key] = ""; inputs[f.key].value = ""; }
+        const first = fields.find((f) => inputs[f.key] && !inputs[f.key].closest("[hidden]") && (!f.show || f.show(vals)));
+        inputs[first?.key]?.focus();
+      } finally {
+        busy = false;
+        ok.disabled = false;
+        ok.textContent = spec.ok || "OK";
+      }
+    };
+    $("formCancel").onclick = () => dlg.close();
+    dlg.addEventListener("close", () => resolve(null), { once: true });
+    dlg.showModal();
+    const first = fields.find((f) => inputs[f.key] && (!f.show || f.show(vals)));
+    inputs[first?.key]?.select();
+  });
+}
+
+const PASSWORD_MIN = 8;
+
+function checkNewPassword(pw, again) {
+  if ([...pw].length < PASSWORD_MIN) throw new FormError(`Use a password of at least ${PASSWORD_MIN} characters.`);
+  if (pw !== again) throw new FormError("The two passwords don't match.");
+}
+
+const ENCRYPT_NOTE = "Images in this folder, their thumbnails and their prompts are encrypted on disk with a key protected by this password. " +
+  "The password is never stored and can't be recovered: if you forget it, the images are lost. Encrypted images only appear inside their folder, " +
+  "and the folder locks itself whenever Pennyframe closes.";
+
 // ---------- folders ----------
 const folderById = (id) => (id ? S.folders.find((f) => f.id === id) : undefined);
 const sortFolders = () => S.folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+const lockIcon = (f) => (f.encrypted ? (f.locked ? "🔒 " : "🔓 ") : "");
+
+// What the grid may show right now: never the stubs of locked images, and encrypted images only inside their own folder.
+const inScope = (m) => !m.locked && (S.filter.folder ? m.folder === S.filter.folder : !m.encrypted);
 
 function folderMenuItems(ids) {
   const picked = ids.map((id) => S.images.find((m) => m.id === id)).filter(Boolean);
   const first = picked[0]?.folder || "", same = picked.every((m) => (m.folder || "") === first);
-  const items = S.folders.map((f) => ({ label: f.name, checked: same && first === f.id, onclick: () => moveToFolder(ids, f.id) }));
+  const items = S.folders.map((f) => ({ label: lockIcon(f) + f.name, checked: same && first === f.id, onclick: () => moveToFolder(ids, f.id) }));
   if (items.length) items.push("-");
   items.push({ label: "New folder…", onclick: () => createFolder(ids) });
   if (picked.some((m) => folderById(m.folder))) items.push({ label: "Remove from folder", onclick: () => moveToFolder(ids, "") });
@@ -1532,19 +1629,28 @@ function folderMenuItems(ids) {
 
 async function resyncGallery() {
   try {
-    const b = await go().Bootstrap();
+    const b = await go().GalleryState();
     S.images = b.images || [];
     S.folders = b.folders || [];
   } catch { /* keep what we have */ }
+  if (S.filter.folder && folderById(S.filter.folder)?.locked) S.filter.folder = "";
+  // a reference or the open viewer may point at something that is locked now
+  S.refs = S.refs.filter((r) => !r.src.startsWith("gallery:") || S.images.some((m) => m.id === r.src.slice(8) && !m.locked));
+  renderRefs();
   renderGrid();
   paintSelection();
+  if ($("dlgView").open) renderViewer();
 }
 
 async function moveToFolder(ids, folderId, quiet) {
+  const dst = folderById(folderId);
+  if (dst?.locked && !(await ensureUnlocked(dst))) return;
   const set = new Set(ids);
   const changed = S.images.filter((m) => set.has(m.id) && (m.folder || "") !== folderId);
   if (!changed.length) { if (!quiet) toast("Already there"); return; }
   const prev = new Map(changed.map((m) => [m.id, m.folder || ""]));
+  const leavingEncrypted = !dst?.encrypted && changed.some((m) => m.encrypted);
+  const touchesEncryption = dst?.encrypted || leavingEncrypted;
   const list = viewList(), vi = list.findIndex((m) => m.id === viewId), neighbor = list[vi + 1] || list[vi - 1];
   try {
     await go().MoveToFolder(changed.map((m) => m.id), folderId);
@@ -1553,16 +1659,17 @@ async function moveToFolder(ids, folderId, quiet) {
     await resyncGallery();
     return;
   }
-  changed.forEach((m) => { m.folder = folderId || undefined; });
-  renderGrid();
-  paintSelection();
+  if (touchesEncryption) await resyncGallery();
+  else { changed.forEach((m) => { m.folder = folderId || undefined; }); renderGrid(); paintSelection(); }
   if ($("dlgView").open) {
     if (viewList().some((m) => m.id === viewId)) renderViewer();
     else if (neighbor && viewList().some((m) => m.id === neighbor.id)) { viewId = neighbor.id; renderViewer(); } else $("dlgView").close();
   }
   if (quiet) return;
   const word = changed.length === 1 ? "image" : "images";
-  const msg = folderId ? `Moved ${changed.length} ${word} to “${folderById(folderId)?.name || "folder"}”` : `Took ${changed.length} ${word} out of their folder`;
+  const msg = folderId
+    ? `Moved ${changed.length} ${word} to “${dst?.name || "folder"}”${dst?.encrypted ? " (encrypted)" : ""}`
+    : `Took ${changed.length} ${word} out of their folder${leavingEncrypted ? ". They are no longer encrypted." : ""}`;
   toast(msg, false, { label: "Undo", fn: () => undoMove(prev) });
 }
 
@@ -1573,16 +1680,33 @@ async function undoMove(prev) {
 }
 
 async function createFolder(ids) {
-  const f = await nameFlow("New folder", "", "Create", (n) => go().CreateFolder(n));
-  if (!f) return;
+  const f = await formDialog({
+    title: "New folder", ok: "Create", busy: "Creating…",
+    fields: [
+      { key: "name", label: "Name", type: "text", max: 60 },
+      { key: "enc", type: "check", label: "Encrypt this folder with a password" },
+      { key: "pw", label: "Password", type: "password", show: (v) => v.enc },
+      { key: "pw2", label: "Repeat the password", type: "password", show: (v) => v.enc },
+      { key: "note", type: "note", text: ENCRYPT_NOTE, show: (v) => v.enc },
+    ],
+    submit: async (v) => {
+      if (v.enc) checkNewPassword(v.pw, v.pw2);
+      return go().CreateFolder(v.name, v.enc ? v.pw : "");
+    },
+  });
+  if (!f || f === true) return;
   S.folders.push(f);
   sortFolders();
   if (ids?.length) await moveToFolder(ids, f.id); else renderGrid();
 }
 
 async function renameFolder(f) {
-  const name = await nameFlow("Rename folder", f.name, "Rename", async (n) => { await go().RenameFolder(f.id, n); return n; });
-  if (name == null) return;
+  const name = await formDialog({
+    title: "Rename folder", ok: "Rename",
+    fields: [{ key: "name", label: "Name", type: "text", value: f.name, max: 60 }],
+    submit: async (v) => { await go().RenameFolder(f.id, v.name); return v.name; },
+  });
+  if (typeof name !== "string") return;
   const cur = folderById(f.id);
   if (cur) cur.name = name.replace(/\s+/g, " ").trim();
   sortFolders();
@@ -1590,18 +1714,74 @@ async function renameFolder(f) {
   if ($("dlgView").open) renderViewer();
 }
 
-async function deleteFolder(f) {
-  try { await go().DeleteFolder(f.id); } catch (e) { toast(errText(e), true); await resyncGallery(); return; }
-  S.folders = S.folders.filter((x) => x.id !== f.id);
-  S.images.forEach((m) => { if (m.folder === f.id) m.folder = undefined; });
-  if (S.filter.folder === f.id) S.filter.folder = "";
-  renderGrid();
-  paintSelection();
-  toast(`Deleted folder “${f.name}”. Its images are still in your gallery.`);
+async function unlockFolder(f) {
+  const ok = await formDialog({
+    title: `Unlock “${f.name}”`, ok: "Unlock", busy: "Unlocking…",
+    fields: [{ key: "pw", label: "Password", type: "password" }],
+    submit: async (v) => { await go().UnlockFolder(f.id, v.pw); },
+  });
+  if (!ok) return false;
+  await resyncGallery();
+  return true;
 }
 
-function openFolder(id) {
+const ensureUnlocked = async (f) => !f.locked || unlockFolder(f);
+
+async function lockFolders(list) {
+  try { for (const f of list) await go().LockFolder(f.id); } catch (e) { toast(errText(e), true); }
+  await resyncGallery();
+  toast(list.length === 1 ? `Locked “${list[0].name}”` : "Locked all encrypted folders");
+}
+
+async function encryptFolder(f) {
+  const ok = await formDialog({
+    title: `Encrypt “${f.name}”`, ok: "Encrypt", busy: "Encrypting…",
+    intro: "Every image already in this folder is encrypted now, and so is anything you add to it later.",
+    fields: [
+      { key: "pw", label: "Password", type: "password" },
+      { key: "pw2", label: "Repeat the password", type: "password" },
+      { key: "note", type: "note", text: ENCRYPT_NOTE },
+    ],
+    submit: async (v) => { checkNewPassword(v.pw, v.pw2); await go().EncryptFolder(f.id, v.pw); },
+  });
+  if (ok) { await resyncGallery(); toast(`Encrypted “${f.name}”`); }
+}
+
+async function decryptFolder(f) {
+  const n = S.images.filter((m) => m.folder === f.id).length;
+  const ok = await formDialog({
+    title: `Remove encryption from “${f.name}”`, ok: "Remove encryption", busy: "Decrypting…", danger: true,
+    intro: `The ${n} ${n === 1 ? "image" : "images"} in this folder will be saved to disk without encryption and show in All again.`,
+    fields: [],
+    submit: async () => { await go().DecryptFolder(f.id); },
+  });
+  if (ok) { S.filter.folder = S.filter.folder === f.id ? "" : S.filter.folder; await resyncGallery(); toast(`“${f.name}” is no longer encrypted`); }
+}
+
+async function changePassword(f) {
+  const ok = await formDialog({
+    title: `Change the password of “${f.name}”`, ok: "Change password", busy: "Changing…",
+    fields: [
+      { key: "old", label: "Current password", type: "password" },
+      { key: "pw", label: "New password", type: "password" },
+      { key: "pw2", label: "Repeat the new password", type: "password" },
+    ],
+    submit: async (v) => { checkNewPassword(v.pw, v.pw2); await go().ChangeFolderPassword(f.id, v.old, v.pw); },
+  });
+  if (ok) toast("Password changed");
+}
+
+async function deleteFolder(f, withImages) {
+  try { await go().DeleteFolder(f.id, !!withImages); } catch (e) { toast(errText(e), true); await resyncGallery(); return; }
+  if (S.filter.folder === f.id) S.filter.folder = "";
+  await resyncGallery();
+  toast(withImages ? `Deleted “${f.name}” and its images` : `Deleted folder “${f.name}”. Its images are still in your gallery.`);
+}
+
+async function openFolder(id) {
   if (S.filter.folder === id) return;
+  const f = folderById(id);
+  if (f?.locked && !(await unlockFolder(f))) return;
   S.filter.folder = id;
   S.sel = new Set();
   renderGrid();
@@ -1610,21 +1790,28 @@ function openFolder(id) {
 }
 
 function folderMenu(f, x, y) {
-  showMenu([
-    { label: "Open", onclick: () => openFolder(f.id) },
-    { label: "Rename…", onclick: () => renameFolder(f) },
-    "-",
-    { label: "Delete folder…", danger: true, arm: "Click again to delete folder", onclick: () => deleteFolder(f) },
-  ], x, y);
+  const items = [{ label: f.locked ? "Unlock…" : "Open", onclick: () => openFolder(f.id) }];
+  if (f.encrypted && !f.locked) items.push({ label: "Lock", onclick: () => lockFolders([f]) });
+  items.push({ label: "Rename…", onclick: () => renameFolder(f) });
+  if (f.encrypted) {
+    items.push({ label: "Change password…", onclick: () => changePassword(f) });
+    if (!f.locked) items.push({ label: "Remove encryption…", onclick: () => decryptFolder(f) });
+  } else {
+    items.push({ label: "Encrypt with a password…", onclick: () => encryptFolder(f) });
+  }
+  items.push("-");
+  if (!f.locked) items.push({ label: "Delete folder…", danger: true, arm: "Click again to delete folder", onclick: () => deleteFolder(f, false) });
+  if (f.encrypted) items.push({ label: "Delete folder and its images…", danger: true, arm: "Click again to delete everything in it", onclick: () => deleteFolder(f, true) });
+  showMenu(items, x, y);
 }
 
 let foldersSig = "";
 
 function renderFolders() {
-  if (S.filter.folder && !folderById(S.filter.folder)) S.filter.folder = "";
+  if (S.filter.folder && (!folderById(S.filter.folder) || folderById(S.filter.folder).locked)) S.filter.folder = "";
   const counts = new Map();
-  for (const m of S.images) if (!m.archived && m.folder) counts.set(m.folder, (counts.get(m.folder) || 0) + 1);
-  const sig = S.filter.folder + "|" + S.folders.map((f) => `${f.id}:${f.name}:${counts.get(f.id) || 0}`).join("|");
+  for (const m of S.images) if (!m.archived && !m.locked && m.folder) counts.set(m.folder, (counts.get(m.folder) || 0) + 1);
+  const sig = S.filter.folder + "|" + S.folders.map((f) => `${f.id}:${f.name}:${f.encrypted}:${f.locked}:${counts.get(f.id) || 0}`).join("|");
   if (sig === foldersSig) return;
   foldersSig = sig;
   const box = $("folders");
@@ -1636,39 +1823,16 @@ function renderFolders() {
     const more = (e) => { const r = e.currentTarget.getBoundingClientRect(); folderMenu(f, r.left, r.bottom + 4); };
     put(box, h("span", { class: "fgroup" },
       h("button", {
-        class: "pill" + (on ? " on" : ""), "aria-pressed": on, title: "Right-click to rename or delete",
+        class: "pill" + (on ? " on" : ""), "aria-pressed": on, title: f.locked ? "Locked: click to enter the password" : "Right-click for options",
         onclick: () => openFolder(f.id),
         oncontextmenu: (e) => { e.preventDefault(); folderMenu(f, e.clientX, e.clientY); },
         onkeydown: (e) => { if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) { e.preventDefault(); more(e); } },
-      }, f.name, h("span", { class: "n" }, String(counts.get(f.id) || 0))),
+      }, lockIcon(f) + f.name, f.locked ? null : h("span", { class: "n" }, String(counts.get(f.id) || 0))),
       on ? h("button", { class: "more", "aria-label": "Folder options", "aria-haspopup": "menu", onclick: more }, "⋯") : null));
   }
   put(box, h("button", { class: "pill add", onclick: () => createFolder(null) }, "＋ New folder"));
-}
-
-// Resolves to the entered name, or null if cancelled. `submit` may throw to show its message and ask again.
-async function nameFlow(title, initial, okLabel, submit) {
-  let err = "", val = initial;
-  for (;;) {
-    const name = await askName(title, val, okLabel, err);
-    if (name == null) return null;
-    try { return await submit(name); } catch (e) { err = errText(e); val = name; }
-  }
-}
-
-function askName(title, value, okLabel, error) {
-  const dlg = $("dlgName"), input = $("nameInput");
-  $("nameTitle").textContent = title;
-  $("nameOk").textContent = okLabel;
-  $("nameError").textContent = error || "";
-  $("nameError").hidden = !error;
-  input.value = value;
-  dlg.returnValue = "";
-  return new Promise((resolve) => {
-    dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok" ? input.value : null), { once: true });
-    dlg.showModal();
-    input.select();
-  });
+  const unlocked = S.folders.filter((f) => f.encrypted && !f.locked);
+  if (unlocked.length) put(box, h("button", { class: "pill", title: "Lock every encrypted folder", onclick: () => lockFolders(unlocked) }, "🔒 Lock all"));
 }
 
 // ---------- updates ----------
@@ -1882,7 +2046,6 @@ function wire() {
     e.preventDefault();
     showImageMenu(viewId, e.clientX, e.clientY, true);
   });
-  $("nameCancel").onclick = () => $("dlgName").close("cancel");
   wireZoom();
 
   document.addEventListener("keydown", (e) => {

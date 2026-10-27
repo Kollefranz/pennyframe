@@ -798,13 +798,12 @@ func (a *App) resolveRefs(refs []string) ([]string, error) {
 			out = append(out, r)
 			continue
 		}
-		path, found := a.gallery().Path(id)
-		if !found {
-			return nil, errors.New("a reference image no longer exists")
+		data, err := a.gallery().ReadImage(id)
+		if errors.Is(err, store.ErrLocked) {
+			return nil, errors.New("a reference image is in a locked folder: unlock it first")
 		}
-		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, err
+			return nil, errors.New("a reference image no longer exists")
 		}
 		mt := store.SniffMediaType(data)
 		out = append(out, "data:"+mt+";base64,"+base64.StdEncoding.EncodeToString(data))
@@ -827,9 +826,38 @@ func (a *App) ArchiveImages(ids []string, archived bool) error {
 
 // ---------- folders ----------
 
-func (a *App) CreateFolder(name string) (store.Folder, error) { return a.gallery().CreateFolder(name) }
-func (a *App) RenameFolder(id, name string) error             { return a.gallery().RenameFolder(id, name) }
-func (a *App) DeleteFolder(id string) error                   { return a.gallery().DeleteFolder(id) }
+// CreateFolder makes a folder; a non-empty password makes it an encrypted folder (left unlocked).
+func (a *App) CreateFolder(name, password string) (store.Folder, error) {
+	return a.gallery().CreateFolder(name, password)
+}
+func (a *App) RenameFolder(id, name string) error { return a.gallery().RenameFolder(id, name) }
+
+// DeleteFolder removes a folder; its images are kept unless deleteImages is set.
+func (a *App) DeleteFolder(id string, deleteImages bool) error {
+	return a.gallery().DeleteFolder(id, deleteImages)
+}
+
+// UnlockFolder, LockFolder and friends: encrypted folders keep their key in memory only while unlocked.
+func (a *App) UnlockFolder(id, password string) error { return a.gallery().UnlockFolder(id, password) }
+func (a *App) LockFolder(id string)                   { a.gallery().LockFolder(id) }
+func (a *App) LockAllFolders()                        { a.gallery().LockAll() }
+func (a *App) EncryptFolder(id, password string) error {
+	return a.gallery().EncryptFolder(id, password)
+}
+func (a *App) DecryptFolder(id string) error { return a.gallery().DecryptFolder(id) }
+func (a *App) ChangeFolderPassword(id, oldPassword, newPassword string) error {
+	return a.gallery().ChangeFolderPassword(id, oldPassword, newPassword)
+}
+
+// GalleryState is the images and folders as the UI should currently see them (locked folders are stubs).
+type GalleryState struct {
+	Images  []store.Meta   `json:"images"`
+	Folders []store.Folder `json:"folders"`
+}
+
+func (a *App) GalleryState() GalleryState {
+	return GalleryState{Images: a.gallery().List(), Folders: a.gallery().Folders()}
+}
 
 // MoveToFolder files the images into a folder; an empty folderID takes them out of their folder.
 func (a *App) MoveToFolder(ids []string, folderID string) error {
@@ -860,7 +888,9 @@ func (a *App) SaveImageAs(id string) (string, error) {
 	if !ok {
 		return "", errors.New("no such image")
 	}
-	src, _ := a.gallery().Path(id)
+	if m.Locked {
+		return "", store.ErrLocked
+	}
 	slug := strings.Trim(unsafeName.ReplaceAllString(strings.ToLower(m.Prompt), "-"), "-")
 	if r := []rune(slug); len(r) > 40 {
 		slug = strings.Trim(string(r[:40]), "-")
@@ -868,7 +898,7 @@ func (a *App) SaveImageAs(id string) (string, error) {
 	if slug == "" {
 		slug = m.ID
 	}
-	ext := filepath.Ext(src)
+	ext := store.ExtFor(m.MediaType)
 	dst, err := wruntime.SaveFileDialog(a.ctx, wruntime.SaveDialogOptions{
 		DefaultFilename: slug + ext,
 		Filters:         []wruntime.FileFilter{{DisplayName: "Image (*" + ext + ")", Pattern: "*" + ext}},
@@ -876,7 +906,7 @@ func (a *App) SaveImageAs(id string) (string, error) {
 	if err != nil || dst == "" {
 		return "", err
 	}
-	data, err := os.ReadFile(src)
+	data, err := a.gallery().ReadImage(id)
 	if err != nil {
 		return "", err
 	}
@@ -884,6 +914,9 @@ func (a *App) SaveImageAs(id string) (string, error) {
 }
 
 func (a *App) RevealImage(id string) error {
+	if m, ok := a.gallery().Get(id); ok && m.Encrypted {
+		return errors.New("encrypted images only exist as encrypted files; use Save as to export a copy")
+	}
 	p, ok := a.gallery().Path(id)
 	if !ok {
 		return errors.New("no such image")
