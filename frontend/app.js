@@ -59,6 +59,9 @@ const S = {
   refs: [], // {src, preview}
   filter: { q: "", fav: false, model: "", archived: false, folder: "" },
   folders: [], // {id, name}, sorted by name
+  prompts: [], // saved prompts that are readable right now
+  draftPrivate: false, // the prompt box holds text from an encrypted folder: never persisted
+  draftFolder: "", // ...and this is that folder, so the text is cleared when it locks
   quality: { byId: new Map(), meta: {} }, // crowd-sourced image Elo by model id
   sel: new Set(), // selected image ids (always a subset of what's visible)
   anchor: null, // last clicked id, start of a shift-click range
@@ -66,7 +69,7 @@ const S = {
   prefs: { favorites: [], recents: [], selected: [], params: {}, prompt: "", thumb: 220 },
 };
 
-const savePrefs = debounce(() => go().SetPrefs(JSON.stringify(S.prefs)).catch(() => {}), 400);
+const savePrefs = debounce(() => go().SetPrefs(JSON.stringify({ ...S.prefs, prompt: S.draftPrivate ? "" : S.prefs.prompt })).catch(() => {}), 400);
 const P = () => S.prefs;
 
 function setModels(list) {
@@ -797,11 +800,17 @@ async function addFiles(files) {
 
 const addGalleryRef = (id) => addGalleryRefs([id]);
 
-function addGalleryRefs(ids) {
+async function addGalleryRefs(ids) {
   let added = 0;
   for (const id of ids) {
-    if (S.refs.some((r) => r.src === "gallery:" + id)) continue;
-    S.refs.push({ src: "gallery:" + id, preview: "/thumb/" + id + "?s=1" });
+    if (S.refs.some((r) => r.id === id)) continue;
+    const img = S.images.find((m) => m.id === id);
+    if (img?.encrypted) {
+      // an in-memory copy, tagged with its folder so it is dropped when the folder locks
+      try { S.refs.push({ ...(await fileToRef(await (await fetch("/img/" + id)).blob())), id, folder: img.folder }); added++; } catch { toast("Couldn't read that image", true); }
+      continue;
+    }
+    S.refs.push({ src: "gallery:" + id, preview: "/thumb/" + id + "?s=1", id });
     added++;
   }
   renderRefs();
@@ -1209,6 +1218,7 @@ function renderViewer() {
       h("button", { class: "btn", onclick: () => toggleImageFav(m.id) }, m.favorite ? "★ Favorited" : "☆ Favorite"),
       h("button", { class: "btn", onclick: () => copyImage(m.id) }, "Copy image"),
       h("button", { class: "btn", onclick: () => navigator.clipboard.writeText(m.prompt).then(() => toast("Prompt copied")) }, "Copy prompt"),
+      h("button", { class: "btn", onclick: () => savePromptDialog(m.prompt, m.encrypted ? m.folder : S.filter.folder) }, "Save prompt"),
       h("button", { class: "btn", onclick: () => viewerArchive(m) }, m.archived ? "Unarchive" : "Archive"),
       h("button", { class: "btn", "aria-haspopup": "menu", onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(folderMenuItems([m.id]), r.left, r.bottom + 4, { targets: [m.id] }); } }, "Folder ▾"),
       h("button", { class: "btn", onclick: () => saveAs(m.id) }, "Save as…"),
@@ -1248,6 +1258,8 @@ async function deleteInViewer(id) {
 function reuse(m) {
   $("prompt").value = m.prompt;
   P().prompt = m.prompt;
+  S.draftPrivate = !!m.encrypted;
+  S.draftFolder = m.encrypted ? m.folder : "";
   if (S.byId.has(m.model)) selectModels([m.model]);
   const map = { aspect_ratio: "aspectRatio", resolution: "resolution", quality: "quality", output_format: "outputFormat", background: "background", n: "n", seed: "seed", output_compression: "compression" };
   P().params = {};
@@ -1386,7 +1398,7 @@ function showMenu(items, x, y, { targets = [] } = {}) {
   items = cleanItems(items);
   if (!items.length) return;
   // Inside an open lightbox the menu must be a descendant of the modal dialog, or the page treats it as inert.
-  const host = $("dlgView").open ? $("dlgView") : document.body;
+  const host = ["dlgForm", "dlgPrompts", "dlgView"].map($).find((d) => d.open) || document.body;
   const root = h("div", {
     class: "ctx-root",
     onpointerdown: (e) => { if (e.target === root) closeMenu(); },
@@ -1504,6 +1516,7 @@ function imageMenuItems(ids, viewer) {
     one && !viewer && { label: "Open", onclick: () => openViewer(one.id) },
     one && { label: "Copy image", onclick: () => copyImage(one.id) },
     one && { label: "Copy prompt", onclick: () => navigator.clipboard.writeText(one.prompt).then(() => toast("Prompt copied")) },
+    one && { label: "Save prompt…", onclick: () => savePromptDialog(one.prompt, one.encrypted ? one.folder : S.filter.folder) },
     "-",
     { label: allFav ? "Remove from favorites" : "Add to favorites", onclick: () => bulkFavorite(ids, !allFav) },
     { label: allArch ? "Unarchive" : "Archive", onclick: () => (viewer ? viewerArchive(one) : bulkArchive(ids, !allArch)) },
@@ -1516,6 +1529,126 @@ function imageMenuItems(ids, viewer) {
     "-",
     { label: `Delete ${noun}…`, danger: true, arm: `Click again to delete ${noun}`, onclick: () => (viewer ? deleteInViewer(one.id) : bulkDelete(ids)) },
   ];
+}
+
+// ---------- saved prompts ----------
+// Prompts in an encrypted folder are readable only while that folder is open (see lockOthers), and are
+// sealed with its password like its images.
+const promptFolderChoices = () => [{ value: "", label: "No folder" }, ...S.folders.filter((f) => !f.locked).map((f) => ({ value: f.id, label: lockIcon(f) + f.name }))];
+
+async function savePromptDialog(text, folderId, title) {
+  const f = folderById(folderId);
+  const p = await formDialog({
+    title: "Save prompt", ok: "Save", busy: "Saving…",
+    fields: [
+      { key: "title", label: "Title (optional)", type: "text", value: title || "", max: 80 },
+      { key: "text", label: "Prompt", type: "textarea", value: text || "", rows: 7 },
+      { key: "folder", label: "Save in", type: "select", options: promptFolderChoices(), value: f && !f.locked ? f.id : "" },
+      { key: "note", type: "note", text: "A prompt saved in an encrypted folder is encrypted with that folder's password, and can only be read while you have the folder open.", show: (v) => !!folderById(v.folder)?.encrypted },
+    ],
+    submit: (v) => go().SavePrompt(v.title, v.text, v.folder),
+  });
+  if (!p || p === true) return null;
+  S.prompts.unshift(p);
+  renderPrompts();
+  toast(p.folder ? `Prompt saved in “${folderById(p.folder)?.name}”` : "Prompt saved");
+  return p;
+}
+
+async function editPrompt(p) {
+  const ok = await formDialog({
+    title: "Edit prompt", ok: "Save", busy: "Saving…",
+    fields: [
+      { key: "title", label: "Title", type: "text", value: p.title, max: 80 },
+      { key: "text", label: "Prompt", type: "textarea", value: p.text, rows: 8 },
+    ],
+    submit: async (v) => { await go().UpdatePrompt(p.id, v.title, v.text); return v; },
+  });
+  if (!ok || ok === true) return;
+  const cur = S.prompts.find((x) => x.id === p.id);
+  if (cur) { cur.title = ok.title.trim() || cur.title; cur.text = ok.text.trim(); }
+  await resyncGallery();
+}
+
+async function movePrompt(p, folderId) {
+  try { await go().MovePrompt(p.id, folderId); } catch (e) { toast(errText(e), true); }
+  await resyncGallery();
+}
+
+async function deletePrompt(p) {
+  try { await go().DeletePrompt(p.id); } catch (e) { toast(errText(e), true); }
+  await resyncGallery();
+}
+
+function usePrompt(p, append) {
+  const box = $("prompt"), before = box.value, wasPrivate = S.draftPrivate, wasFolder = S.draftFolder;
+  box.value = append && before.trim() ? before.trimEnd() + "\n" + p.text : p.text;
+  P().prompt = box.value;
+  // text from an encrypted folder is never written to the settings file
+  if (p.encrypted) { S.draftPrivate = true; S.draftFolder = p.folder; } else if (!append) { S.draftPrivate = false; S.draftFolder = ""; }
+  savePrefs();
+  const undo = before.trim() && before !== box.value ? { label: "Undo", fn: () => { box.value = before; P().prompt = before; S.draftPrivate = wasPrivate; S.draftFolder = wasFolder; savePrefs(); } } : undefined;
+  toast(append ? "Added to your prompt" : "Prompt loaded", false, undo);
+  $("dlgPrompts").close();
+  box.focus();
+}
+
+function promptMenu(p, x, y) {
+  const moves = [{ label: "No folder", checked: !p.folder, onclick: () => movePrompt(p, "") },
+    ...S.folders.filter((f) => !f.locked).map((f) => ({ label: lockIcon(f) + f.name, checked: p.folder === f.id, onclick: () => movePrompt(p, f.id) }))];
+  showMenu([
+    { label: "Add to current prompt", onclick: () => usePrompt(p, true) },
+    { label: "Copy", onclick: () => navigator.clipboard.writeText(p.text).then(() => toast("Prompt copied")) },
+    { label: "Edit…", onclick: () => editPrompt(p) },
+    { label: "Move to folder", sub: moves },
+    "-",
+    { label: "Delete…", danger: true, arm: "Click again to delete", onclick: () => deletePrompt(p) },
+  ], x, y);
+}
+
+function promptRow(p) {
+  return h("div", { class: "prow" },
+    h("div", { class: "ptext" }, h("b", {}, p.title), h("span", { class: "psnip" }, p.text)),
+    h("div", { class: "pact" },
+      h("button", { class: "btn sm primary", onclick: () => usePrompt(p, false) }, "Use"),
+      h("button", { class: "btn sm", "aria-label": "More actions", "aria-haspopup": "menu", onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); promptMenu(p, r.left, r.bottom + 4); } }, "⋯")));
+}
+
+function renderPrompts() {
+  const dlg = $("dlgPrompts");
+  if (!dlg.open) return;
+  const box = $("promptList"), q = $("promptSearch").value.trim().toLowerCase();
+  clear(box);
+  const match = (p) => !q || `${p.title} ${p.text}`.toLowerCase().includes(q);
+  const groups = [{ id: "", name: "No folder", f: null }, ...S.folders.map((f) => ({ id: f.id, name: f.name, f }))];
+  let any = false;
+  for (const g of groups) {
+    const locked = !!g.f?.locked, list = S.prompts.filter((p) => (p.folder || "") === g.id && match(p));
+    if (locked ? !!q : !list.length) continue; // sealed prompts can't be searched, and empty groups add nothing
+    any = true;
+    box.append(h("section", { class: "pgroup" },
+      h("h4", {}, (g.f ? lockIcon(g.f) : "") + g.name),
+      locked
+        ? h("div", { class: "plocked" }, h("span", { class: "hint" }, "Locked. Its prompts show when you open the folder."),
+            h("button", { class: "btn sm", onclick: () => { dlg.close(); openFolder(g.id); } }, "Open folder…"))
+        : list.map(promptRow)));
+  }
+  if (!any) box.append(h("p", { class: "hint pempty" }, q ? "No saved prompts match." : "No saved prompts yet. Write a prompt and press Save, or choose New…"));
+}
+
+function openPrompts() {
+  $("promptSearch").value = "";
+  $("dlgPrompts").showModal();
+  renderPrompts();
+  $("promptSearch").focus();
+}
+
+// An encrypted folder is only unlocked while it is the folder on screen. After every navigation (and after
+// anything that briefly unlocked a folder) lock the rest; the backend forgets their keys, images and prompts.
+async function lockOthers() {
+  if (!S.folders.some((f) => f.encrypted && !f.locked && f.id !== S.filter.folder)) return;
+  try { await go().LockFoldersExcept(S.filter.folder || ""); } catch (e) { toast(errText(e), true); }
+  await resyncGallery();
 }
 
 // ---------- forms ----------
@@ -1547,6 +1680,15 @@ function formDialog(spec) {
       el = h("label", { class: "check" },
         h("input", { type: "checkbox", checked: !!vals[f.key], onchange: (e) => { vals[f.key] = e.target.checked; refresh(); } }),
         h("span", {}, f.label));
+    } else if (f.type === "textarea") {
+      const input = h("textarea", { rows: f.rows || 6, maxlength: f.max, spellcheck: "true", "aria-label": f.label, oninput: (e) => { vals[f.key] = e.target.value; } }, vals[f.key]);
+      inputs[f.key] = input;
+      el = h("label", {}, f.label, input);
+    } else if (f.type === "select") {
+      const input = h("select", { "aria-label": f.label, onchange: (e) => { vals[f.key] = e.target.value; refresh(); } },
+        f.options.map((o) => h("option", { value: o.value, selected: o.value === vals[f.key] }, o.label)));
+      inputs[f.key] = input;
+      el = h("label", {}, f.label, input);
     } else {
       const input = h("input", { type: f.type === "password" ? "password" : "text", value: vals[f.key], maxlength: f.max, spellcheck: "false", autocomplete: "off", "aria-label": f.label, oninput: (e) => { vals[f.key] = e.target.value; } });
       inputs[f.key] = input;
@@ -1594,7 +1736,8 @@ function formDialog(spec) {
     dlg.addEventListener("close", () => resolve(null), { once: true });
     dlg.showModal();
     const first = fields.find((f) => inputs[f.key] && (!f.show || f.show(vals)));
-    inputs[first?.key]?.select();
+    const target = inputs[first?.key];
+    if (target?.select) target.select(); else target?.focus();
   });
 }
 
@@ -1632,17 +1775,38 @@ async function resyncGallery() {
     const b = await go().GalleryState();
     S.images = b.images || [];
     S.folders = b.folders || [];
+    S.prompts = b.prompts || [];
   } catch { /* keep what we have */ }
   if (S.filter.folder && folderById(S.filter.folder)?.locked) S.filter.folder = "";
   // a reference or the open viewer may point at something that is locked now
   S.refs = S.refs.filter((r) => !r.src.startsWith("gallery:") || S.images.some((m) => m.id === r.src.slice(8) && !m.locked));
+  // anything on screen that came from a folder that is now locked goes with it
+  const locked = new Set(S.folders.filter((f) => f.locked).map((f) => f.id));
+  let cleared = false;
+  const kept = S.refs.filter((r) => !(r.folder && locked.has(r.folder)));
+  if (kept.length !== S.refs.length) { S.refs = kept; cleared = true; }
+  if (S.draftFolder && locked.has(S.draftFolder)) {
+    $("prompt").value = "";
+    P().prompt = "";
+    S.draftPrivate = false;
+    S.draftFolder = "";
+    savePrefs();
+    cleared = true;
+  }
+  if (cleared) toast("Cleared the prompt and reference images that came from an encrypted folder");
   renderRefs();
   renderGrid();
   paintSelection();
   if ($("dlgView").open) renderViewer();
+  renderPrompts();
 }
 
-async function moveToFolder(ids, folderId, quiet) {
+// Filing images can need a folder unlocked for a moment; whatever that was, it locks again afterwards.
+async function moveToFolder(...args) {
+  try { return await moveImagesToFolder(...args); } finally { await lockOthers(); }
+}
+
+async function moveImagesToFolder(ids, folderId, quiet) {
   const dst = folderById(folderId);
   if (dst?.locked && !(await ensureUnlocked(dst))) return;
   const set = new Set(ids);
@@ -1697,7 +1861,9 @@ async function createFolder(ids) {
   if (!f || f === true) return;
   S.folders.push(f);
   sortFolders();
-  if (ids?.length) await moveToFolder(ids, f.id); else renderGrid();
+  if (ids?.length) await moveToFolder(ids, f.id);
+  else if (f.encrypted) await openFolder(f.id); // it is unlocked right now: step into it
+  else renderGrid();
 }
 
 async function renameFolder(f) {
@@ -1744,7 +1910,7 @@ async function encryptFolder(f) {
     ],
     submit: async (v) => { checkNewPassword(v.pw, v.pw2); await go().EncryptFolder(f.id, v.pw); },
   });
-  if (ok) { await resyncGallery(); toast(`Encrypted “${f.name}”`); }
+  if (ok) { await resyncGallery(); await lockOthers(); toast(`Encrypted “${f.name}”`); }
 }
 
 async function decryptFolder(f) {
@@ -1787,6 +1953,7 @@ async function openFolder(id) {
   renderGrid();
   paintSelection();
   $("scroll").scrollTop = 0;
+  await lockOthers(); // leaving an encrypted folder locks it
 }
 
 function folderMenu(f, x, y) {
@@ -1989,6 +2156,7 @@ function wire() {
       if (!b) return;
       S.images = b.images || [];
       S.folders = b.folders || [];
+      S.prompts = b.prompts || [];
       S.filter.folder = "";
       S.outputDir = b.outputDir;
       $("outDir").textContent = S.outputDir;
@@ -2001,7 +2169,19 @@ function wire() {
   $("modelsRefresh").onclick = async () => { await refreshModels(true); $("modelStats").textContent = `${S.models.length} image models cached`; };
 
   $("go").onclick = generate;
-  $("prompt").addEventListener("input", (e) => { P().prompt = e.target.value; savePrefs(); });
+  $("prompt").addEventListener("input", (e) => {
+    P().prompt = e.target.value;
+    if (!e.target.value.trim()) { S.draftPrivate = false; S.draftFolder = ""; }
+    savePrefs();
+  });
+  $("btnPrompts").onclick = openPrompts;
+  $("btnSavePrompt").onclick = () => {
+    if (!$("prompt").value.trim()) { toast("Write a prompt first", true); $("prompt").focus(); return; }
+    savePromptDialog($("prompt").value, S.filter.folder);
+  };
+  $("promptNew").onclick = () => savePromptDialog("", S.filter.folder);
+  $("promptsDone").onclick = () => $("dlgPrompts").close();
+  $("promptSearch").addEventListener("input", debounce(renderPrompts, 100));
   $("prompt").addEventListener("paste", (e) => {
     const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
     if (files.length) { e.preventDefault(); addFiles(files); }
@@ -2112,6 +2292,7 @@ async function main() {
   setModels(b.models);
   S.images = b.images || [];
   S.folders = b.folders || [];
+  S.prompts = b.prompts || [];
   S.outputDir = b.outputDir;
   $("prompt").value = P().prompt || "";
   $("thumbSize").value = P().thumb || 220;

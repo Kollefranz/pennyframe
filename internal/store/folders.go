@@ -204,6 +204,7 @@ func (g *Gallery) UnlockFolder(id, password string) error {
 			g.unlockItem(m, dek)
 		}
 	}
+	g.unlockPrompts(id, dek)
 	g.mu.Unlock()
 	return g.healFolder(id)
 }
@@ -236,6 +237,7 @@ func (g *Gallery) LockFolder(id string) {
 
 func (g *Gallery) lockLocked(id string) {
 	delete(g.keys, id)
+	delete(g.prompts, id)
 	for _, m := range g.items {
 		if m.Folder == id && m.Encrypted {
 			lockItem(m)
@@ -243,11 +245,16 @@ func (g *Gallery) lockLocked(id string) {
 	}
 }
 
-func (g *Gallery) LockAll() {
+func (g *Gallery) LockAll() { g.LockExcept("") }
+
+// LockExcept locks every unlocked folder but keep: the one the user is looking at.
+func (g *Gallery) LockExcept(keep string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for id := range g.keys {
-		g.lockLocked(id)
+		if id != keep || keep == "" {
+			g.lockLocked(id)
+		}
 	}
 }
 
@@ -284,8 +291,9 @@ func (g *Gallery) EncryptFolder(id, password string) error {
 		return err
 	}
 	g.keys[id] = dek
+	perr := g.sealPrompts(id)
 	g.mu.Unlock()
-	return g.healFolder(id)
+	return errors.Join(perr, g.healFolder(id))
 }
 
 // DecryptFolder removes a folder's encryption (it must be unlocked), writing its images back in the clear.
@@ -315,6 +323,9 @@ func (g *Gallery) DecryptFolder(id string) error {
 	i = g.findRec(id)
 	if i < 0 {
 		return errors.New("no such folder")
+	}
+	if err := g.unsealPrompts(id); err != nil {
+		return err
 	}
 	prev := g.folders[i].Crypto
 	g.folders[i].Crypto = nil
@@ -400,6 +411,9 @@ func (g *Gallery) DeleteFolder(id string, deleteImages bool) error {
 	i = g.findRec(id)
 	if i < 0 {
 		return nil
+	}
+	if err := g.releasePrompts(id, deleteImages); err != nil {
+		return err
 	}
 	prev := g.folders
 	g.folders = append(append([]folderRec{}, g.folders[:i]...), g.folders[i+1:]...)

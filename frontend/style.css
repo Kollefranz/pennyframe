@@ -171,6 +171,18 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
 .fgroup .more:hover { background: var(--hover); color: var(--text); }
 .card.ctx-target { outline: 2px solid var(--accent); outline-offset: -2px; }
 
+/* saved prompts */
+.label-row .links { display: inline-flex; gap: 12px; margin-left: auto; }
+.prompt-list { overflow-y: auto; padding: 6px 14px 14px; min-height: 160px; max-height: 60vh; }
+.pgroup h4 { margin: 14px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); }
+.prow { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; margin-bottom: 6px; background: var(--bg); }
+.prow:hover { border-color: var(--accent); }
+.ptext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.psnip { color: var(--dim); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
+.pact { display: flex; gap: 6px; flex: none; }
+.plocked { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border: 1px dashed var(--line); border-radius: 9px; }
+.pempty { text-align: center; padding: 28px 10px; }
+
 /* context menu */
 .ctx-root { position: fixed; inset: 0; z-index: 300; }
 .ctx { position: fixed; min-width: 210px; max-width: 320px; max-height: calc(100vh - 16px); overflow-y: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 5px; outline: none; animation: pop .12s ease-out; }

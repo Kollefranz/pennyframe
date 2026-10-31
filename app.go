@@ -110,6 +110,7 @@ type Boot struct {
 	Models    []openrouter.Model `json:"models"`
 	Images    []store.Meta       `json:"images"`
 	Folders   []store.Folder     `json:"folders"`
+	Prompts   []store.Prompt     `json:"prompts"`
 	Prefs     string             `json:"prefs"`
 	OutputDir string             `json:"outputDir"`
 	EnvKey    bool               `json:"envKey"`
@@ -126,6 +127,7 @@ func (a *App) Bootstrap() Boot {
 		Models:    models,
 		Images:    a.gallery().List(),
 		Folders:   a.gallery().Folders(),
+		Prompts:   a.gallery().Prompts(),
 		Prefs:     a.cfg.Prefs(),
 		OutputDir: a.cfg.OutputDir(),
 		EnvKey:    os.Getenv("OPENROUTER_API_KEY") != "",
@@ -841,6 +843,10 @@ func (a *App) DeleteFolder(id string, deleteImages bool) error {
 func (a *App) UnlockFolder(id, password string) error { return a.gallery().UnlockFolder(id, password) }
 func (a *App) LockFolder(id string)                   { a.gallery().LockFolder(id) }
 func (a *App) LockAllFolders()                        { a.gallery().LockAll() }
+
+// LockFoldersExcept locks every encrypted folder except the one being viewed ("" locks them all).
+// The UI calls it after every navigation, so a folder is only ever unlocked while it is on screen.
+func (a *App) LockFoldersExcept(keep string) { a.gallery().LockExcept(keep) }
 func (a *App) EncryptFolder(id, password string) error {
 	return a.gallery().EncryptFolder(id, password)
 }
@@ -853,11 +859,25 @@ func (a *App) ChangeFolderPassword(id, oldPassword, newPassword string) error {
 type GalleryState struct {
 	Images  []store.Meta   `json:"images"`
 	Folders []store.Folder `json:"folders"`
+	Prompts []store.Prompt `json:"prompts"`
 }
 
 func (a *App) GalleryState() GalleryState {
-	return GalleryState{Images: a.gallery().List(), Folders: a.gallery().Folders()}
+	g := a.gallery()
+	return GalleryState{Images: g.List(), Folders: g.Folders(), Prompts: g.Prompts()}
 }
+
+// ---------- saved prompts ----------
+
+// SavePrompt stores a prompt, optionally in a folder; in an encrypted folder it is sealed with the folder's key.
+func (a *App) SavePrompt(title, text, folderID string) (store.Prompt, error) {
+	return a.gallery().SavePrompt(title, text, folderID)
+}
+func (a *App) UpdatePrompt(id, title, text string) error {
+	return a.gallery().UpdatePrompt(id, title, text)
+}
+func (a *App) DeletePrompt(id string) error         { return a.gallery().DeletePrompt(id) }
+func (a *App) MovePrompt(id, folderID string) error { return a.gallery().MovePrompt(id, folderID) }
 
 // MoveToFolder files the images into a folder; an empty folderID takes them out of their folder.
 func (a *App) MoveToFolder(ids []string, folderID string) error {

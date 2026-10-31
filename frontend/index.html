@@ -29,7 +29,10 @@
         <div id="selected" class="chips"></div>
       </section>
       <section class="grow">
-        <div class="label-row"><span class="label">Prompt</span><span class="hint" id="promptHint"></span></div>
+        <div class="label-row">
+          <span class="label">Prompt</span><span class="hint" id="promptHint"></span>
+          <span class="links"><button class="link" id="btnPrompts" title="Your saved prompts">Saved</button><button class="link" id="btnSavePrompt" title="Save this prompt for later">Save</button></span>
+        </div>
         <textarea id="prompt" placeholder="A copper coin on a windowsill, soft morning light…" spellcheck="true"></textarea>
       </section>
       <section>
@@ -194,6 +197,16 @@
     </div>
     <div class="row end"><span class="hint" id="appVersion" style="margin-right:auto"></span><button class="btn primary" id="settingsClose">Close</button></div>
   </div>
+</dialog>
+
+<dialog id="dlgPrompts" class="modal wide">
+  <div class="modal-head">
+    <input type="search" id="promptSearch" placeholder="Search saved prompts…" autocomplete="off" aria-label="Search saved prompts">
+    <button class="btn" id="promptNew">New…</button>
+    <button class="btn" id="promptsDone">Done</button>
+  </div>
+  <div id="promptList" class="prompt-list"></div>
+  <div class="modal-foot hint">Prompts in an encrypted folder are encrypted with its password and only show while you have that folder open. A prompt you use is copied into the prompt box, and from there into the details of the images you make, so file those into an encrypted folder too.</div>
 </dialog>
 
 <dialog id="dlgForm" class="modal">

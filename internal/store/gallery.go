@@ -72,14 +72,15 @@ type Gallery struct {
 	mu      sync.RWMutex
 	items   map[string]*Meta
 	folders []folderRec
-	keys    map[string][]byte // folder id -> data key, only while unlocked
+	keys    map[string][]byte   // folder id -> data key, only while unlocked
+	prompts map[string][]Prompt // folder id ("" for none) -> saved prompts; encrypted folders only while unlocked
 
 	thumbMu sync.Mutex
 	thumbs  map[string]*sync.Mutex
 }
 
 func OpenGallery(dir, thumbDir string) (*Gallery, error) {
-	g := &Gallery{dir: dir, thumbDir: thumbDir, items: map[string]*Meta{}, keys: map[string][]byte{}, thumbs: map[string]*sync.Mutex{}}
+	g := &Gallery{dir: dir, thumbDir: thumbDir, items: map[string]*Meta{}, keys: map[string][]byte{}, prompts: map[string][]Prompt{}, thumbs: map[string]*sync.Mutex{}}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -111,6 +112,7 @@ func OpenGallery(dir, thumbDir string) (*Gallery, error) {
 		g.items[m.ID] = &m
 	}
 	g.loadFolders()
+	g.loadPrompts()
 	g.sweepLegacyThumbs()
 	g.sweepStale()
 	return g, nil
